@@ -1,0 +1,5 @@
+# The package index of moebius-plugins, written by tools/index. Do not edit it by hand: a release adds its
+# version here, and the versions of earlier releases stay.
+
+format = 1
+package = []

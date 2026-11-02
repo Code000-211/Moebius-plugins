@@ -1,0 +1,29 @@
+[package]
+name = "moebius-plugins-index"
+version = "0.1.0"
+description = "Writes index.toml, the package index of moebius-plugins, from the packages' manifests and their release assets."
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "moebius_plugins_index"
+
+[[bin]]
+name = "moebius-plugins-index"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

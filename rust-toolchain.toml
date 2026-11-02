@@ -1,0 +1,6 @@
+# The Rust the repository is built, tested and released with. The programs of a release are built from it, so that
+# building a tag again gives the same program as far as the compiler can; change it in a commit of its own, together
+# with the `dtolnay/rust-toolchain` version in the workflows (a test checks that they agree).
+[toolchain]
+channel = "1.90.0"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,206 @@
+name: Release
+
+# A release is the tag <package>-v<version>, such as nono-sandbox-v0.1.0, or this workflow started by hand with the
+# package and version (it then creates the tag at the commit it runs on, for every kind of package, because the files of
+# a workflow, rules or skills package are named by URLs at the tag). The tag must match the version of the package's
+# moebius-package.toml and point at a commit on main. One commit is built and indexed: github.sha, which the first job
+# checks against the tag.
+#
+# The order protects the sha256 in index.toml: the index entry is worked out first, on a copy, from the programs that
+# were built, and a version that is listed already with other contents stops the run before anything is uploaded. A
+# program is never overwritten on the release: one that is there must have the sha256 of the build, and the programs
+# are downloaded back and checked against the entry before it is committed to main.
+on:
+  push:
+    tags: ["*-v*"]
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: The package, such as nono-sandbox
+        required: true
+      version:
+        description: Its version, as in its moebius-package.toml, such as 0.1.0
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('{0}-v{1}', inputs.plugin, inputs.version) || github.ref_name }}
+
+# One release writes index.toml at a time.
+concurrency:
+  group: release-index
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: check the tag
+    runs-on: ubuntu-latest
+    # Writes the tag of a release started by hand.
+    permissions:
+      contents: write
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      program: ${{ steps.plan.outputs.program }}
+      builds: ${{ steps.plan.outputs.builds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check that the tag points at this commit, which is on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; a release is made from a commit that was merged"
+            exit 1
+          fi
+          # The commit the tag names, looking through an annotated tag.
+          remote="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
+          tagged="$(awk '/\^\{\}$/ {print $1; found=1} END {}' <<<"$remote")"
+          if [ -z "$tagged" ]; then tagged="$(awk 'NR==1 {print $1}' <<<"$remote")"; fi
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG is at $tagged already, and this run is at $GITHUB_SHA; a released version does not move, release a new version"
+            exit 1
+          fi
+          if [ -z "$tagged" ]; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+      - name: Check that the tag matches the manifest
+        id: plan
+        run: |
+          plan="$(cargo run -q -p moebius-plugins-index -- plan "$TAG")"
+          echo "$plan"
+          echo "kind=$(jq -r .kind <<<"$plan")" >> "$GITHUB_OUTPUT"
+          echo "program=$(jq -r .program <<<"$plan")" >> "$GITHUB_OUTPUT"
+          echo "builds=$(jq -c .builds <<<"$plan")" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: prepare
+    if: needs.prepare.outputs.kind == 'plugin'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.builds) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build the plugin
+        shell: bash
+        run: |
+          dir="$(cargo run -q -p moebius-plugins-index -- plan "$TAG" | jq -r .dir)"
+          cargo build --release --locked --manifest-path "$dir/Cargo.toml" --target "${{ matrix.target }}"
+          mkdir -p dist
+          program="${{ needs.prepare.outputs.program }}"
+          exe=""
+          case "${{ matrix.target }}" in *windows*) exe=".exe" ;; esac
+          cp "target/${{ matrix.target }}/release/${program}${exe}" "dist/${program}-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: program-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish and update the index
+    needs: [prepare, build]
+    # The build is skipped for a package that is not a program.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The commit that was built and checked against the tag, for both ways of starting the run.
+      - uses: actions/checkout@v4
+        with:
+          path: release
+          ref: ${{ github.sha }}
+      # main: where index.toml is committed.
+      - uses: actions/checkout@v4
+        with:
+          path: main
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: release
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.kind == 'plugin'
+        with:
+          path: assets
+          pattern: program-*
+          merge-multiple: true
+      - name: Build the generator
+        run: cargo build -q --manifest-path release/Cargo.toml -p moebius-plugins-index
+      # First, on a copy of the index: a version that is listed already with other contents (a rebuild that differs)
+      # stops the run here, before the release is touched.
+      - name: Work out the entry of the index
+        run: |
+          tool="$PWD/release/target/debug/moebius-plugins-index"
+          cp main/index.toml work-index.toml
+          args=(add "$TAG" --root release --index work-index.toml)
+          if [ -d assets ]; then args+=(--assets assets); fi
+          "$tool" "${args[@]}"
+          "$tool" check --root release --index work-index.toml
+      - name: Publish the programs with their sha256, never overwriting one
+        if: needs.prepare.outputs.kind == 'plugin'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tool="$PWD/release/target/debug/moebius-plugins-index"
+          (cd assets && sha256sum -- * | tee ../SHA256SUMS)
+          mv SHA256SUMS assets/SHA256SUMS
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes "Release $TAG." --verify-tag
+          fi
+          mkdir published
+          for file in assets/*; do
+            name="$(basename "$file")"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx -- "$name"; then
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p "$name" -D published
+              if [ "$(sha256sum < "$file")" != "$(sha256sum < "published/$name")" ]; then
+                echo "::error::$name is on the release $TAG already with other contents; it is not overwritten"
+                exit 1
+              fi
+            else
+              gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$file"
+            fi
+          done
+          # What the release serves now is what the index says.
+          rm -rf published && mkdir published
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p '*' -D published
+          (cd published && sha256sum -c SHA256SUMS)
+          "$tool" verify "$TAG" --index work-index.toml --assets published
+      - name: Commit index.toml to main
+        working-directory: main
+        run: |
+          cp ../work-index.toml index.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.toml
+          if git diff --cached --quiet; then
+            echo "index.toml already lists $TAG"
+            exit 0
+          fi
+          git commit -m "Add $TAG to the index" -m "Written by the release workflow with the sha256 of the programs of the release."
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull --rebase origin main
+          done
+          exit 1

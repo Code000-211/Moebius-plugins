@@ -22,7 +22,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -31,12 +31,24 @@ jobs:
       # On Windows the plugin refuses to start; its test checks that, and the Unix-only tests are not built.
       - run: cargo test --workspace --no-fail-fast
 
+  index:
+    name: index.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p moebius-plugins-index
+      # Every manifest is valid, and index.toml, if it is there, parses as Moebius reads it and fits the manifests: no
+      # version newer than a manifest's, and the entries of released versions are what their manifests say.
+      - run: cargo run -q -p moebius-plugins-index -- check
+
   e2e:
     name: end to end with nono
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
       - name: Install the pinned nono
         run: |

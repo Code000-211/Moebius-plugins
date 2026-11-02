@@ -8,6 +8,8 @@ are those of that repository (its `CLAUDE.md` and `CONTRIBUTING.md`); this file 
 - `plugins/<name>/` is one plugin, its own crate in the Cargo workspace, with a `moebius-package.toml` and a `README.md`
   that says what it does, its settings and how it is installed.
 - `workflows/`, `rules/` and `skills/` are for packages that are not programs; none yet.
+- `tools/index/` writes `index.toml`; nobody edits that file by hand (the release workflow does). A released version
+  never changes.
 - A plugin in Rust depends on `moebius-plugin-api` with `git` and a full `rev` of the Moebius repository, never a branch.
   Move the `rev` deliberately, in a commit of its own.
 
