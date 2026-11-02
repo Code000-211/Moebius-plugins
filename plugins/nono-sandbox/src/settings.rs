@@ -162,6 +162,8 @@ mod tests {
         assert!(settings.read_only.is_empty() && settings.exclude_agents.is_empty());
     }
 
+    // The paths are Unix ones, which Windows does not count as absolute; the plugin refuses to start there anyway.
+    #[cfg(unix)]
     #[test]
     fn every_flag_is_read() {
         let settings = parse(&[

@@ -45,10 +45,10 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           tar xzf nono.tar.gz -C "$HOME/.local/bin" nono
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # By its full path: the tests start nono with the run's environment, whose PATH does not hold ~/.local/bin.
+          echo "MOEBIUS_E2E_NONO=$HOME/.local/bin/nono" >> "$GITHUB_ENV"
           "$HOME/.local/bin/nono" --version
           # The tests of mode "moebius" need the kernel to filter TCP by port; fail here, with nono's own words, if not.
           "$HOME/.local/bin/nono" setup --check-only | tee setup.txt
           grep -q "TCP network rule support verified" setup.txt
       - run: cargo test -p moebius-plugin-nono-sandbox --test e2e -- --nocapture
-        env:
-          MOEBIUS_E2E_NONO: "1"
