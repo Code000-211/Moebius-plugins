@@ -2,4 +2,100 @@
 # version here, and the versions of earlier releases stay.
 
 format = 1
-package = []
+
+[[package]]
+name = "nono-sandbox"
+version = "0.1.0"
+kind = "plugin"
+description = "Runs every Pi-Bolt process in its own nono sandbox: its worktree, a few read-only paths and, by default, only the Moebius router."
+license = "Apache-2.0"
+homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/nono-sandbox"
+moebius = ">=0.2"
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
+
+[package.plugin]
+kind = "launcher"
+program = "nono-sandbox"
+launches = true
+decides = []
+settings_as = "args"
+
+[package.plugin.requires]
+nono = "0.81.0"
+
+[[package.plugin.settings]]
+name = "nono"
+flag = "--nono"
+type = "string"
+repeatable = false
+default = "nono"
+description = "The nono program."
+
+[[package.plugin.settings]]
+name = "nono_version"
+flag = "--nono-version"
+type = "string"
+repeatable = false
+default = "0.81.0"
+description = "The nono version the plugin is tested with. A different version stops the plugin at start with a clear sentence, since nono is before 1.0."
+
+[[package.plugin.settings]]
+name = "network"
+flag = "--network"
+type = "string"
+choices = ["moebius", "internet"]
+repeatable = false
+default = "moebius"
+description = "moebius: a run reaches only the router, the gateway and the tool-call check. internet: those and general outbound access."
+
+[[package.plugin.settings]]
+name = "read_only"
+flag = "--read-only"
+type = "list of paths"
+repeatable = true
+default = []
+description = "Extra paths the runs may read, such as a toolchain outside the defaults."
+
+[[package.plugin.settings]]
+name = "exclude_agents"
+flag = "--exclude-agent"
+type = "list of strings"
+repeatable = true
+default = []
+description = 'Agents that run without the sandbox, such as the Moebius agent, which operates the server with "$MOEBIUS".'
+
+[[package.plugin.settings]]
+name = "agents.<name>.network"
+flag = "--agent-network"
+type = "list of <agent>=<mode>"
+repeatable = true
+default = []
+description = "The network mode for one agent, such as Coder=moebius."
+
+[[package.plugin.settings]]
+name = "profiles_dir"
+flag = "--profiles-dir"
+type = "path"
+repeatable = false
+default = ".moebius-nono-profiles"
+description = "Where the per-run profiles are written, owner-only, relative to the plugin's working directory (that of moebius.toml). Keep it outside every directory a run can read. Removed when the run ends and at the server's start for runs that are gone."
+
+[[package.downloads]]
+target = "x86_64-unknown-linux-gnu"
+url = "https://github.com/Code000-211/moebius-plugins/releases/download/nono-sandbox-v0.1.0/nono-sandbox-x86_64-unknown-linux-gnu"
+sha256 = "716a81de116ab0b837478d10be31928251630b0284d200bb0f58720d68128994"
+
+[[package.downloads]]
+target = "aarch64-unknown-linux-gnu"
+url = "https://github.com/Code000-211/moebius-plugins/releases/download/nono-sandbox-v0.1.0/nono-sandbox-aarch64-unknown-linux-gnu"
+sha256 = "d9f0159426b33a0554af16606ccea3a845f63686bac1c2767ffb33b96f106014"
+
+[[package.downloads]]
+target = "x86_64-apple-darwin"
+url = "https://github.com/Code000-211/moebius-plugins/releases/download/nono-sandbox-v0.1.0/nono-sandbox-x86_64-apple-darwin"
+sha256 = "38604f3b85a821cc0f2843937ff8f03bb5cb3df7042a1b184d92a9c0f90e131a"
+
+[[package.downloads]]
+target = "aarch64-apple-darwin"
+url = "https://github.com/Code000-211/moebius-plugins/releases/download/nono-sandbox-v0.1.0/nono-sandbox-aarch64-apple-darwin"
+sha256 = "78917a1a8b9800e2b6b4e29e4c5571754e3e2f1d8296f65c63c3687dbe082577"
