@@ -21,6 +21,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      # The tests read the workflows and manifests as committed, with LF line ends, on Windows too.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
         with:
