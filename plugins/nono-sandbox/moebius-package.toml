@@ -1,0 +1,86 @@
+# The package manifest of the nono sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
+
+name = "nono-sandbox"
+version = "0.1.0"
+kind = "plugin"
+description = "Runs every Pi-Bolt process in its own nono sandbox: its worktree, a few read-only paths and, by default, only the Moebius router."
+license = "Apache-2.0"
+homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/nono-sandbox"
+
+# The Moebius versions it works with: the ones that have the launcher kind.
+moebius = ">=0.2"
+
+# nono supports Linux (Landlock, kernel 5.13 or later) and macOS (Seatbelt); on Windows only inside WSL2, where the
+# Linux build is used. macOS is experimental: its profile has not run on a Mac yet.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
+[plugin]
+# What it is: a program speaking the process plugin protocol as a launcher.
+kind = "launcher"
+program = "nono-sandbox"
+# The [[plugins]] entry that installs it needs `launches = true`.
+launches = true
+# The core's [[plugins]] entry has no table of settings, so the settings are the program's arguments.
+settings_as = "args"
+
+# The program it needs besides Moebius.
+[plugin.requires]
+nono = "0.81.0"
+
+[[plugin.settings]]
+name = "nono"
+flag = "--nono"
+type = "string"
+default = "nono"
+description = "The nono program."
+
+[[plugin.settings]]
+name = "nono_version"
+flag = "--nono-version"
+type = "string"
+default = "0.81.0"
+description = "The nono version the plugin is tested with. A different version stops the plugin at start with a clear sentence, since nono is before 1.0."
+
+[[plugin.settings]]
+name = "network"
+flag = "--network"
+type = "string"
+choices = ["moebius", "internet"]
+default = "moebius"
+description = "moebius: a run reaches only the router, the gateway and the tool-call check. internet: those and general outbound access."
+
+[[plugin.settings]]
+name = "read_only"
+flag = "--read-only"
+type = "list of paths"
+repeatable = true
+default = []
+description = "Extra paths the runs may read, such as a toolchain outside the defaults."
+
+[[plugin.settings]]
+name = "exclude_agents"
+flag = "--exclude-agent"
+type = "list of strings"
+repeatable = true
+default = []
+description = "Agents that run without the sandbox, such as the Moebius agent, which operates the server with \"$MOEBIUS\"."
+
+[[plugin.settings]]
+name = "agents.<name>.network"
+flag = "--agent-network"
+type = "list of <agent>=<mode>"
+repeatable = true
+default = []
+description = "The network mode for one agent, such as Coder=moebius."
+
+[[plugin.settings]]
+name = "profiles_dir"
+flag = "--profiles-dir"
+type = "path"
+default = ".moebius-nono-profiles"
+description = "Where the per-run profiles are written, owner-only, relative to the plugin's working directory (that of moebius.toml). Keep it outside every directory a run can read. Removed when the run ends and at the server's start for runs that are gone."

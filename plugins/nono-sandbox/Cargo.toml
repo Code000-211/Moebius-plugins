@@ -1,0 +1,27 @@
+[package]
+name = "moebius-plugin-nono-sandbox"
+version = "0.1.0"
+description = "A Moebius launcher plugin that runs every Pi-Bolt process in a nono sandbox."
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+name = "nono_sandbox"
+
+[[bin]]
+name = "nono-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+moebius-plugin-api = { git = "https://github.com/Code000-211/moebius", rev = "36409f4a195b69e98adf73099d9f27f9adb83fd2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
