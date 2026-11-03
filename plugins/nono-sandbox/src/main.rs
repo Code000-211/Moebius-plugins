@@ -29,7 +29,12 @@ fn main() -> ExitCode {
 
 fn start(args: Vec<String>) -> Result<(), String> {
     let mut settings = Settings::from_args(args).map_err(|e| e.to_string())?;
-    check(&settings, std::env::consts::OS).map_err(|e| e.to_string())?;
+    check(
+        &settings,
+        std::env::consts::OS,
+        &nono_sandbox::check::kernel_release(),
+    )
+    .map_err(|e| e.to_string())?;
     // The core starts the wrapped program with the run's environment, so name nono by its path.
     if let Some(path) = nono_sandbox::check::resolve(&settings.nono) {
         settings.nono = path;
