@@ -29,10 +29,12 @@ fn main() -> ExitCode {
 
 fn start(args: Vec<String>) -> Result<(), String> {
     let mut settings = Settings::from_args(args).map_err(|e| e.to_string())?;
+    let kernel = nono_sandbox::check::kernel_release();
     check(
         &settings,
         std::env::consts::OS,
-        &nono_sandbox::check::kernel_release(),
+        &kernel,
+        nono_sandbox::check::is_wsl2(&kernel),
     )
     .map_err(|e| e.to_string())?;
     // The core starts the wrapped program with the run's environment, so name nono by its path.

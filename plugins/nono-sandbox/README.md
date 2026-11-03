@@ -83,10 +83,13 @@ sandbox: a launcher that is not running fails every run, so a run never starts u
 - macOS works through Seatbelt, and is **experimental**: the profile for it has not run on a Mac yet, and the end-to-end
   tests run on Linux only.
 - Windows is refused: nono supports only WSL2, where the Linux build is used.
-- WSL2 (a kernel release that names Microsoft) is refused while `--unix-sockets` is `deny`: mediating Unix sockets
-  needs a seccomp user-notification listener, and WSL2's kernel answers `EBUSY` for one, so nono would exit before
-  every run (Moebius then says "pi-bolt exited before it settled"). Set `--unix-sockets allow` there; the filesystem
-  and network limits stay.
+- WSL2 is told as nono tells it, from the kernel and never the environment: a kernel release that names Microsoft, or
+  `/proc/sys/fs/binfmt_misc/WSLInterop` (or `WSLInterop-late`). It is refused while `--unix-sockets` is `deny`:
+  mediating Unix sockets needs a seccomp user-notification listener, and WSL2's kernel answers `EBUSY` for one, so nono
+  would exit before every run (Moebius then says "pi-bolt exited before it settled"). Set `--unix-sockets allow` there.
+  WSL2's kernel is 6.6, without Landlock ABI 4, so mode `moebius` is refused there too (the TCP check above): set
+  `--network internet` and no `--agent-network moebius`. The filesystem limits and the environment stay. The plugin
+  uses no nono credential proxy, so nono's `wsl2_proxy_policy` does not apply and is not set.
 - `nono --version` must say the version of `--nono-version`.
 
 ## Known limits
