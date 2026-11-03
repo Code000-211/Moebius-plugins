@@ -17,7 +17,8 @@
 //!   restricted. On Linux the ports are `connect_port` rules, which Landlock applies to every host (see
 //!   [`network_note`]); on macOS `open_port`, which Seatbelt limits to localhost;
 //! - Unix sockets: `linux.af_unix_mediation` is `pathname` and no socket is granted, so a run cannot connect to the
-//!   D-Bus, Docker or ssh-agent sockets of its user;
+//!   D-Bus, Docker or ssh-agent sockets of its user. With the setting `unix_sockets` at `allow` the key is left out
+//!   and nono does not mediate them (see [`socket_note`]);
 //! - the environment: only the variables of [`kept_env`].
 //!
 //! A directory that is granted for reading by the environment (a `PATH` entry, the harness's directory, the setting
@@ -31,7 +32,7 @@ use std::path::{Path, PathBuf};
 use moebius_plugin_api::{LaunchRequest, Urls};
 use serde_json::{Value, json};
 
-use crate::settings::{Network, Settings};
+use crate::settings::{Network, Settings, UnixSockets};
 
 /// Why a profile cannot be written for a request. The launch then fails, which fails the run: a sandbox that cannot
 /// be described is never skipped.
@@ -451,7 +452,7 @@ pub fn build(
     }
     groups.insert("exclude".into(), json!(excluded));
 
-    Ok(json!({
+    let mut profile = json!({
         "meta": {
             "name": format!("moebius-run-{}", request.run.id),
             "description": format!(
@@ -463,9 +464,12 @@ pub fn build(
         "filesystem": filesystem,
         "workdir": {"access": "readwrite"},
         "network": network,
-        "linux": {"af_unix_mediation": "pathname"},
         "environment": {"allow_vars": env},
-    }))
+    });
+    if settings.unix_sockets == UnixSockets::Deny {
+        profile["linux"] = json!({"af_unix_mediation": "pathname"});
+    }
+    Ok(profile)
 }
 
 /// A sentence for the run's record when the sandbox is weaker than its name says: on Linux nono filters TCP by port,
@@ -481,6 +485,15 @@ pub fn network_note(request: &LaunchRequest, mode: Network, os: &str) -> Option<
          the loopback",
         ports.join(", ")
     ))
+}
+
+/// A sentence for the run's record when nono does not mediate Unix sockets, which only nono on Linux does.
+pub fn socket_note(settings: &Settings, os: &str) -> Option<String> {
+    (settings.unix_sockets == UnixSockets::Allow && os == "linux").then(|| {
+        "Unix sockets are not mediated (unix_sockets = allow): the run can connect to any socket it can reach by \
+         path, such as the D-Bus, Docker or ssh-agent sockets of its user"
+            .to_string()
+    })
 }
 
 // The paths in these tests are Unix paths.
@@ -812,6 +825,26 @@ mod tests {
             assert!(grants(&profile).iter().all(|p| !p.contains(".sock")));
             assert!(profile["filesystem"].get("unix_socket").is_none());
         }
+        assert_eq!(socket_note(&Settings::default(), "linux"), None);
+    }
+
+    #[test]
+    fn allowed_unix_sockets_leave_mediation_out_and_say_so() {
+        let settings = Settings {
+            unix_sockets: UnixSockets::Allow,
+            ..Settings::default()
+        };
+        let profile = build(&request(), &settings, Network::Moebius, "linux").unwrap();
+        assert!(profile.get("linux").is_none(), "{profile}");
+        // The rest of the sandbox stays.
+        assert_eq!(profile["network"]["block"], true);
+        assert!(!strings(&profile, "filesystem", "allow").is_empty());
+        assert!(
+            socket_note(&settings, "linux")
+                .unwrap()
+                .contains("not mediated")
+        );
+        assert_eq!(socket_note(&settings, "macos"), None);
     }
 
     #[test]

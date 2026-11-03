@@ -1,10 +1,10 @@
 //! The checks made once when the plugin starts: the platform can be sandboxed, nono is there and is the version the
-//! plugin is tested with. A plugin that fails them exits with the sentence, so the core marks it not running and every
+//! plugin is tested with, and the settings ask nothing of the kernel that it cannot give. A plugin that fails them exits with the sentence, so the core marks it not running and every
 //! launch is refused: a run never starts unsandboxed because the sandbox is missing.
 
 use std::process::Command;
 
-use crate::settings::Settings;
+use crate::settings::{Settings, UnixSockets};
 
 /// Why the plugin cannot start.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -37,17 +37,31 @@ pub enum CheckError {
          no --agent-network moebius. `nono setup --check-only` said: {0}"
     )]
     NoTcpFiltering(String),
+    #[error(
+        "this is WSL2 (kernel {0}), whose kernel refuses nono the seccomp listener that mediating Unix sockets needs, \
+         so every run would fail. Set --unix-sockets allow to sandbox runs without it (a run can then connect to the \
+         Unix sockets it can reach, such as Docker's), or run Moebius on native Linux"
+    )]
+    Wsl2UnixSockets(String),
 }
 
 /// What `nono setup --check-only` says when the kernel filters TCP by port.
 const TCP_FILTERING: [&str; 2] = ["TCP network filtering", "TCP network rule support verified"];
 
-/// Checks the platform, nono's version and, on Linux, Landlock. `os` is `std::env::consts::OS`.
-pub fn check(settings: &Settings, os: &str) -> Result<(), CheckError> {
+/// Checks the platform, nono's version and, on Linux, Landlock and WSL2. `os` is `std::env::consts::OS` and
+/// `kernel` the kernel's release ([`kernel_release`]).
+pub fn check(settings: &Settings, os: &str, kernel: &str) -> Result<(), CheckError> {
     match os {
         "windows" => return Err(CheckError::Windows),
         "linux" | "macos" => {}
         other => return Err(CheckError::Platform(other.to_string())),
+    }
+    // WSL2's init holds a seccomp listener already, so nono's own gets EBUSY and nono exits before the run starts.
+    if os == "linux"
+        && settings.unix_sockets == UnixSockets::Deny
+        && kernel.to_ascii_lowercase().contains("microsoft")
+    {
+        return Err(CheckError::Wsl2UnixSockets(kernel.trim().to_string()));
     }
     let version = run(settings, &["--version"])?;
     let output = version.text();
@@ -86,6 +100,11 @@ pub fn check(settings: &Settings, os: &str) -> Result<(), CheckError> {
         }
     }
     Ok(())
+}
+
+/// The release of the running kernel on Linux (it names Microsoft on WSL2), or nothing where it cannot be read.
+pub fn kernel_release() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default()
 }
 
 /// The absolute path of `program`: itself when it has a directory part, else the first `PATH` entry that holds it.
@@ -160,8 +179,8 @@ mod tests {
             "* Landlock enabled (syscall probe)\n* TCP network rule support verified",
             0,
         );
-        assert_eq!(check(&settings, "linux"), Ok(()));
-        assert_eq!(check(&settings, "macos"), Ok(()));
+        assert_eq!(check(&settings, "linux", ""), Ok(()));
+        assert_eq!(check(&settings, "macos", ""), Ok(()));
     }
 
     #[test]
@@ -173,7 +192,7 @@ mod tests {
             "Landlock enabled\nTCP network filtering",
             0,
         );
-        let error = check(&settings, "linux").unwrap_err();
+        let error = check(&settings, "linux", "").unwrap_err();
         assert_eq!(
             error,
             CheckError::Version {
@@ -183,7 +202,7 @@ mod tests {
         );
         assert!(error.to_string().contains("0.82.1"));
         settings.nono_version = "0.82.1".into();
-        assert_eq!(check(&settings, "linux"), Ok(()));
+        assert_eq!(check(&settings, "linux", ""), Ok(()));
     }
 
     #[test]
@@ -195,11 +214,11 @@ mod tests {
             "Landlock is not supported by this kernel",
             1,
         );
-        let error = check(&settings, "linux").unwrap_err();
+        let error = check(&settings, "linux", "").unwrap_err();
         assert!(matches!(error, CheckError::NoLandlock(_)));
         assert!(error.to_string().contains("not supported by this kernel"));
         // Seatbelt needs no such probe.
-        assert_eq!(check(&settings, "macos"), Ok(()));
+        assert_eq!(check(&settings, "macos", ""), Ok(()));
     }
 
     #[test]
@@ -211,17 +230,17 @@ mod tests {
             "* Landlock enabled (syscall probe)",
             0,
         );
-        let error = check(&settings, "linux").unwrap_err();
+        let error = check(&settings, "linux", "").unwrap_err();
         assert!(matches!(error, CheckError::NoTcpFiltering(_)), "{error}");
         assert!(error.to_string().contains("6.7"));
         // An agent in mode moebius needs it as much as the default.
         settings.network = crate::settings::Network::Internet;
-        assert_eq!(check(&settings, "linux"), Ok(()));
+        assert_eq!(check(&settings, "linux", ""), Ok(()));
         settings
             .agent_network
             .insert("Coder".into(), crate::settings::Network::Moebius);
         assert!(matches!(
-            check(&settings, "linux"),
+            check(&settings, "linux", ""),
             Err(CheckError::NoTcpFiltering(_))
         ));
         let ok = fake(
@@ -230,7 +249,7 @@ mod tests {
             "* Landlock enabled\n* TCP network filtering available",
             0,
         );
-        assert_eq!(check(&ok, "linux"), Ok(()));
+        assert_eq!(check(&ok, "linux", ""), Ok(()));
     }
 
     #[test]
@@ -238,7 +257,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = fake(dir.path(), "nono 0.81.0", "Landlock enabled", 3);
         assert!(matches!(
-            check(&settings, "linux"),
+            check(&settings, "linux", ""),
             Err(CheckError::NoLandlock(_))
         ));
     }
@@ -249,7 +268,7 @@ mod tests {
             nono: "/does/not/exist/nono".into(),
             ..Settings::default()
         };
-        let error = check(&settings, "linux").unwrap_err().to_string();
+        let error = check(&settings, "linux", "").unwrap_err().to_string();
         assert!(
             error.contains("/does/not/exist/nono") && error.contains("--nono"),
             "{error}"
@@ -261,7 +280,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = fake(dir.path(), "something else", "Landlock enabled", 0);
         assert!(matches!(
-            check(&settings, "linux"),
+            check(&settings, "linux", ""),
             Err(CheckError::NoVersion { .. })
         ));
     }
@@ -271,15 +290,44 @@ mod tests {
 mod refusal_tests {
     use super::*;
 
+    const WSL2: &str = "6.6.87.2-microsoft-standard-WSL2";
+
+    #[test]
+    fn wsl2_with_mediated_unix_sockets_is_refused_with_the_fix() {
+        let settings = Settings {
+            nono: "/does/not/exist".into(),
+            ..Settings::default()
+        };
+        let error = check(&settings, "linux", WSL2).unwrap_err();
+        assert_eq!(error, CheckError::Wsl2UnixSockets(WSL2.into()));
+        assert!(
+            error.to_string().contains("--unix-sockets allow"),
+            "{error}"
+        );
+        // Native Linux goes on to the checks of nono.
+        assert!(matches!(
+            check(&settings, "linux", "7.2.9-200.fc44.x86_64"),
+            Err(CheckError::NotFound { .. })
+        ));
+        let allowed = Settings {
+            unix_sockets: UnixSockets::Allow,
+            ..settings
+        };
+        assert!(matches!(
+            check(&allowed, "linux", WSL2),
+            Err(CheckError::NotFound { .. })
+        ));
+    }
+
     #[test]
     fn windows_and_unknown_platforms_are_refused_before_nono_is_run() {
         let settings = Settings {
             nono: "/does/not/exist".into(),
             ..Settings::default()
         };
-        assert_eq!(check(&settings, "windows"), Err(CheckError::Windows));
+        assert_eq!(check(&settings, "windows", ""), Err(CheckError::Windows));
         assert_eq!(
-            check(&settings, "freebsd"),
+            check(&settings, "freebsd", ""),
             Err(CheckError::Platform("freebsd".into()))
         );
     }

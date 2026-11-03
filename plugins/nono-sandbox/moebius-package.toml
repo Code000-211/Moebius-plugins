@@ -1,7 +1,7 @@
 # The package manifest of the nono sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
 
 name = "nono-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 kind = "plugin"
 description = "Runs every Pi-Bolt process in its own nono sandbox: its worktree, a few read-only paths and, by default, only the Moebius router."
 license = "Apache-2.0"
@@ -53,6 +53,14 @@ type = "string"
 choices = ["moebius", "internet"]
 default = "moebius"
 description = "moebius: a run reaches only the router, the gateway and the tool-call check. internet: those and general outbound access."
+
+[[plugin.settings]]
+name = "unix_sockets"
+flag = "--unix-sockets"
+type = "string"
+choices = ["deny", "allow"]
+default = "deny"
+description = "deny: a run connects to no Unix socket of its user (D-Bus, Docker, ssh-agent). allow: nono does not mediate them; needed on WSL2, where the plugin does not start with deny."
 
 [[plugin.settings]]
 name = "read_only"

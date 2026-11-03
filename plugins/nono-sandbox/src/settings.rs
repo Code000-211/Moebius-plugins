@@ -6,6 +6,7 @@
 //! | `--nono <program>` | `nono` | `nono` |
 //! | `--nono-version <version>` | `nono_version` | [`PINNED_NONO_VERSION`] |
 //! | `--network moebius\|internet` | `network` | `moebius` |
+//! | `--unix-sockets deny\|allow` | `unix_sockets` | `deny` |
 //! | `--read-only <path>` (repeatable) | `read_only` | none |
 //! | `--exclude-agent <name>` (repeatable) | `exclude_agents` | none |
 //! | `--agent-network <name>=<mode>` (repeatable) | `agents.<name>.network` | none |
@@ -35,6 +36,25 @@ impl Network {
     }
 }
 
+/// Whether a run may connect to the Unix sockets it can reach by path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnixSockets {
+    /// nono mediates pathname sockets and grants none, so a run reaches no socket of its user.
+    Deny,
+    /// nono does not mediate them. For WSL2, whose kernel cannot give nono the seccomp listener that mediation needs.
+    Allow,
+}
+
+impl UnixSockets {
+    fn parse(text: &str) -> Result<Self, SettingsError> {
+        match text {
+            "deny" => Ok(Self::Deny),
+            "allow" => Ok(Self::Allow),
+            other => Err(SettingsError::BadUnixSockets(other.to_string())),
+        }
+    }
+}
+
 /// Why the arguments are not settings.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SettingsError {
@@ -44,6 +64,8 @@ pub enum SettingsError {
     UnknownFlag(String),
     #[error("the network mode must be \"moebius\" or \"internet\", not {0:?}")]
     BadNetwork(String),
+    #[error("--unix-sockets must be \"deny\" or \"allow\", not {0:?}")]
+    BadUnixSockets(String),
     #[error("--agent-network takes <agent>=<mode>, not {0:?}")]
     BadAgentNetwork(String),
     #[error("--read-only takes an absolute path without $ or *, not {0:?}")]
@@ -56,6 +78,7 @@ pub struct Settings {
     pub nono: String,
     pub nono_version: String,
     pub network: Network,
+    pub unix_sockets: UnixSockets,
     pub read_only: Vec<PathBuf>,
     pub exclude_agents: BTreeSet<String>,
     pub agent_network: BTreeMap<String, Network>,
@@ -68,6 +91,7 @@ impl Default for Settings {
             nono: "nono".into(),
             nono_version: PINNED_NONO_VERSION.into(),
             network: Network::Moebius,
+            unix_sockets: UnixSockets::Deny,
             read_only: Vec::new(),
             exclude_agents: BTreeSet::new(),
             agent_network: BTreeMap::new(),
@@ -97,6 +121,7 @@ impl Settings {
                 "--nono" => settings.nono = value()?,
                 "--nono-version" => settings.nono_version = value()?,
                 "--network" => settings.network = Network::parse(&value()?)?,
+                "--unix-sockets" => settings.unix_sockets = UnixSockets::parse(&value()?)?,
                 "--read-only" => {
                     let path = value()?;
                     if !std::path::Path::new(&path).is_absolute() || path.contains(['$', '*']) {
@@ -159,6 +184,7 @@ mod tests {
         assert_eq!(settings.nono, "nono");
         assert_eq!(settings.nono_version, PINNED_NONO_VERSION);
         assert_eq!(settings.network, Network::Moebius);
+        assert_eq!(settings.unix_sockets, UnixSockets::Deny);
         assert!(settings.read_only.is_empty() && settings.exclude_agents.is_empty());
     }
 
@@ -173,6 +199,8 @@ mod tests {
             "0.82.0",
             "--network",
             "internet",
+            "--unix-sockets",
+            "allow",
             "--read-only",
             "/opt/tools",
             "--read-only",
@@ -188,6 +216,7 @@ mod tests {
         assert_eq!(settings.nono, "/opt/nono");
         assert_eq!(settings.nono_version, "0.82.0");
         assert_eq!(settings.network, Network::Internet);
+        assert_eq!(settings.unix_sockets, UnixSockets::Allow);
         assert_eq!(settings.read_only.len(), 2);
         assert!(settings.exclude_agents.contains("Moebius"));
         assert_eq!(settings.network_for("Coder"), Network::Moebius);
@@ -200,6 +229,10 @@ mod tests {
         assert_eq!(
             parse(&["--network", "open"]),
             Err(SettingsError::BadNetwork("open".into()))
+        );
+        assert_eq!(
+            parse(&["--unix-sockets", "open"]),
+            Err(SettingsError::BadUnixSockets("open".into()))
         );
         assert_eq!(
             parse(&["--nono"]),

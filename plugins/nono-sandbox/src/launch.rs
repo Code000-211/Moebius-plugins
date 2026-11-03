@@ -18,7 +18,7 @@ use moebius_plugin_api::{
 use serde_json::Value;
 
 use crate::commands::{SESSION_PREFIX, cleanup_command, stop_command};
-use crate::profile::{build, kept_env, network_note};
+use crate::profile::{build, kept_env, network_note, socket_note};
 use crate::settings::Settings;
 use crate::{NAME, PINNED_NONO_VERSION};
 
@@ -47,8 +47,16 @@ impl NonoSandbox {
             )));
         }
         let mode = self.settings.network_for(&request.run.agent);
-        let note = network_note(&request, mode, std::env::consts::OS);
-        let profile = build(&request, &self.settings, mode, std::env::consts::OS)
+        let os = std::env::consts::OS;
+        let notes: Vec<String> = [
+            network_note(&request, mode, os),
+            socket_note(&self.settings, os),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let note = (!notes.is_empty()).then(|| notes.join("; "));
+        let profile = build(&request, &self.settings, mode, os)
             .map_err(|e| PluginError::Failed(format!("cannot write a nono profile: {e}")))?;
         let file = write_profile(&self.settings.profiles_dir, request.run.id, &profile)
             .map_err(|e| PluginError::Failed(format!("cannot write a nono profile: {e}")))?;
@@ -454,6 +462,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wrapped = wrapped(plugin(dir.path(), |_| {}).launch(request("Coder")).unwrap());
         assert!(wrapped.note.unwrap().contains("every host"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_note_says_when_unix_sockets_are_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = plugin(dir.path(), |s| {
+            s.unix_sockets = crate::settings::UnixSockets::Allow
+        });
+        let note = wrapped(plugin.launch(request("Coder")).unwrap())
+            .note
+            .unwrap();
+        assert!(
+            note.contains("every host") && note.contains("not mediated"),
+            "{note}"
+        );
     }
 
     #[cfg(unix)] // Permissions of a directory.
