@@ -60,7 +60,7 @@ flag = "--unix-sockets"
 type = "string"
 choices = ["deny", "allow"]
 default = "deny"
-description = "deny: a run connects to no Unix socket of its user (D-Bus, Docker, ssh-agent). allow: nono does not mediate them; needed on WSL2, where the plugin does not start with deny."
+description = "deny: a run connects to no Unix socket of its user (D-Bus, Docker, ssh-agent). allow: nono does not mediate them, so a run can connect to any socket its user can (Docker, the user D-Bus, the ssh-agent, on WSL2 the Windows interop socket) and act as its user outside the sandbox through it; only where mediation cannot work (WSL2), where the plugin does not start with deny."
 
 [[plugin.settings]]
 name = "read_only"

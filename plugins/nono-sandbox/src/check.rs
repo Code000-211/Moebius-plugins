@@ -1,6 +1,7 @@
 //! The checks made once when the plugin starts: the platform can be sandboxed, nono is there and is the version the
-//! plugin is tested with, and the settings ask nothing of the kernel that it cannot give. A plugin that fails them exits with the sentence, so the core marks it not running and every
-//! launch is refused: a run never starts unsandboxed because the sandbox is missing.
+//! plugin is tested with, and the settings ask nothing of the kernel that it cannot give. A plugin that fails them
+//! exits with the sentence, so the core marks it not running and every launch is refused: a run never starts
+//! unsandboxed because the sandbox is missing.
 
 use std::process::Command;
 
@@ -38,9 +39,10 @@ pub enum CheckError {
     )]
     NoTcpFiltering(String),
     #[error(
-        "this is WSL2 (kernel {0}), whose kernel refuses nono the seccomp listener that mediating Unix sockets needs, \
-         so every run would fail. Set --unix-sockets allow to sandbox runs without it (a run can then connect to the \
-         Unix sockets it can reach, such as Docker's), or run Moebius on native Linux"
+        "this is WSL (kernel {0}), whose kernel refuses nono the seccomp listener that mediating Unix sockets needs, \
+         so every run would fail. Set --unix-sockets allow to sandbox runs without it (a run can then connect to any \
+         Unix socket its user can, such as Docker's, the D-Bus or the Windows interop socket, and act as the user \
+         outside the sandbox through it), or run Moebius on native Linux"
     )]
     Wsl2UnixSockets(String),
 }

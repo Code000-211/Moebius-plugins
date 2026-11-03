@@ -19,7 +19,7 @@ use moebius_plugin_api::{
     Call, Kind, LaunchAnswer, LaunchRequest, LaunchRun, Plugin, Urls, Wrapped,
 };
 use nono_sandbox::launch::NonoSandbox;
-use nono_sandbox::settings::{Network, Settings};
+use nono_sandbox::settings::{Network, Settings, UnixSockets};
 
 /// The nono to test, or `None` when the test is not asked for.
 fn nono() -> Option<String> {
@@ -117,8 +117,19 @@ fn world() -> World {
     }
 }
 
-/// What the plugin answers for a run of `program` with `args` in `world`, in mode `mode`.
-fn launch(world: &World, mode: Network, nono: &str, program: &str, args: Vec<String>) -> Wrapped {
+/// Settings left as they are.
+fn unchanged(_: &mut Settings) {}
+
+/// What the plugin answers for a run of `program` with `args` in `world`, in mode `mode`, with the settings after
+/// `tweak` has changed them.
+fn launch(
+    world: &World,
+    mode: Network,
+    nono: &str,
+    tweak: &dyn Fn(&mut Settings),
+    program: &str,
+    args: Vec<String>,
+) -> Wrapped {
     let root = &world.root;
     let url = format!("http://127.0.0.1:{}", world.router);
     let request = LaunchRequest {
@@ -164,12 +175,13 @@ fn launch(world: &World, mode: Network, nono: &str, program: &str, args: Vec<Str
         clone: None,
         runner: None,
     };
-    let settings = Settings {
+    let mut settings = Settings {
         nono: nono.to_string(),
         network: mode,
         profiles_dir: root.join("profiles"),
         ..Settings::default()
     };
+    tweak(&mut settings);
     let plugin = NonoSandbox::new(settings, PathBuf::from(env!("CARGO_BIN_EXE_nono-sandbox")));
     let answer = plugin
         .call(Call::new(
@@ -184,8 +196,14 @@ fn launch(world: &World, mode: Network, nono: &str, program: &str, args: Vec<Str
     *wrapped
 }
 
-/// Runs the check script in the sandbox the plugin makes for mode `mode`; returns its `name=result` lines.
-fn run(world: &World, mode: Network, nono: &str) -> BTreeMap<String, String> {
+/// Runs the check script in the sandbox the plugin makes for mode `mode` and the settings after `tweak`; returns its
+/// `name=result` lines.
+fn run(
+    world: &World,
+    mode: Network,
+    nono: &str,
+    tweak: &dyn Fn(&mut Settings),
+) -> BTreeMap<String, String> {
     let root = &world.root;
     let python = has_python();
     let external = match &world.external {
@@ -244,7 +262,7 @@ fn run(world: &World, mode: Network, nono: &str) -> BTreeMap<String, String> {
         cleanup,
         remove,
         ..
-    } = launch(world, mode, nono, "bash", vec!["-c".into(), script]);
+    } = launch(world, mode, nono, tweak, "bash", vec!["-c".into(), script]);
     let output = Command::new(program)
         .args(args)
         .env_clear()
@@ -322,7 +340,7 @@ fn expected_in_mode_moebius(world: &World) -> BTreeMap<String, String> {
 fn a_run_sees_its_worktree_and_the_router_and_nothing_else() {
     let Some(nono) = nono() else { return };
     let world = world();
-    let results = run(&world, Network::Moebius, &nono);
+    let results = run(&world, Network::Moebius, &nono, &unchanged);
     assert_eq!(results, expected_in_mode_moebius(&world));
 }
 
@@ -337,7 +355,7 @@ fn the_router_port_is_open_on_every_host_on_linux() {
         eprintln!("this machine has no non-loopback address; nothing to record");
         return;
     }
-    let results = run(&world, Network::Moebius, &nono);
+    let results = run(&world, Network::Moebius, &nono, &unchanged);
     assert_eq!(results["connect_external_router_port"], "ok");
     assert_eq!(results["connect_external_other"], "denied");
 }
@@ -345,7 +363,7 @@ fn the_router_port_is_open_on_every_host_on_linux() {
 #[test]
 fn mode_internet_reaches_other_ports_but_the_files_stay_out_of_reach() {
     let Some(nono) = nono() else { return };
-    let results = run(&world(), Network::Internet, &nono);
+    let results = run(&world(), Network::Internet, &nono, &unchanged);
     assert_eq!(results["connect_router"], "ok");
     assert_eq!(results["connect_other"], "ok");
     for denied in [
@@ -371,7 +389,7 @@ fn the_resolved_profile_has_none_of_the_groups_that_write_to_tmp() {
     // profile whether the profile names them or not.
     let Some(nono) = nono() else { return };
     let world = world();
-    let wrapped = launch(&world, Network::Moebius, &nono, "true", vec![]);
+    let wrapped = launch(&world, Network::Moebius, &nono, &unchanged, "true", vec![]);
     let shown = Command::new(&nono)
         .args(["profile", "show"])
         .arg(&wrapped.remove[0])
@@ -405,6 +423,34 @@ fn the_resolved_profile_has_none_of_the_groups_that_write_to_tmp() {
     }
 }
 
+#[test]
+fn allowed_unix_sockets_open_only_the_sockets() {
+    // Without mediation a run reaches the socket (Landlock does not gate connect() to pathname sockets); every other
+    // limit stays.
+    let Some(nono) = nono() else { return };
+    if !has_python() {
+        eprintln!("python3 is needed to connect to the socket");
+        return;
+    }
+    let world = world();
+    let allow = |settings: &mut Settings| settings.unix_sockets = UnixSockets::Allow;
+    let results = run(&world, Network::Moebius, &nono, &allow);
+    let mut expected = expected_in_mode_moebius(&world);
+    expected.insert("unix_socket".into(), "ok".into());
+    assert_eq!(results, expected);
+    for (name, value) in [
+        ("read_outside", "denied"),
+        ("read_other_worktree", "denied"),
+        ("read_secrets", "denied"),
+        ("write_outside", "denied"),
+        ("connect_router", "ok"),
+        ("connect_other", "denied"),
+        ("provider_key", "absent"),
+    ] {
+        assert_eq!(results[name], value, "{name}");
+    }
+}
+
 /// Starts the run with piped streams, as the core does.
 fn spawn(wrapped: &Wrapped, world: &World) -> std::process::Child {
     Command::new(&wrapped.program)
@@ -424,7 +470,7 @@ fn the_harness_keeps_its_standard_input_and_output() {
     use std::io::{BufRead, BufReader, Write};
     let Some(nono) = nono() else { return };
     let world = world();
-    let wrapped = launch(&world, Network::Moebius, &nono, "cat", vec![]);
+    let wrapped = launch(&world, Network::Moebius, &nono, &unchanged, "cat", vec![]);
     let mut child = spawn(&wrapped, &world);
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
@@ -468,6 +514,7 @@ fn the_stop_command_succeeds_and_the_sandboxed_program_ends_with_nono() {
             &world,
             Network::Moebius,
             &nono,
+            &unchanged,
             "sh",
             vec![
                 "-c".into(),

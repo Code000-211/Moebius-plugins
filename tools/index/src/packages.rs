@@ -71,6 +71,7 @@ pub fn discover(root: &Path) -> Result<Vec<Found>> {
                     manifest.kind
                 )));
             }
+            check_crate_version(&dir, &manifest)?;
             if found.iter().any(|f| f.manifest.name == name) {
                 return Err(Error::Invalid(format!("the package {name} is there twice")));
             }
@@ -83,6 +84,33 @@ pub fn discover(root: &Path) -> Result<Vec<Found>> {
     }
     found.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
     Ok(found)
+}
+
+/// A plugin written in Rust reports its crate's version, so the version of its `Cargo.toml` must be the manifest's.
+fn check_crate_version(dir: &Path, manifest: &Package) -> Result<()> {
+    let cargo = dir.join("Cargo.toml");
+    if manifest.plugin.is_none() || !cargo.is_file() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&read(&cargo)?).into_owned();
+    let parsed: toml::Table = toml::from_str(&text).map_err(|e| Error::Toml {
+        path: cargo.clone(),
+        message: e.to_string(),
+    })?;
+    // A version inherited from the workspace is not a literal one to compare.
+    let version = parsed
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str());
+    match version {
+        Some(version) if version != manifest.version => Err(Error::Invalid(format!(
+            "{}: the version is {version}, and the manifest {} says {}; set both to the same version",
+            cargo.display(),
+            dir.join("moebius-package.toml").display(),
+            manifest.version
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The package name and version of a release tag `<name>-v<version>`.
@@ -250,6 +278,21 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("name of its folder")
         );
+    }
+
+    #[test]
+    fn a_plugin_whose_cargo_version_differs_from_its_manifest_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        repository(dir.path());
+        let cargo = dir.path().join("plugins/gate/Cargo.toml");
+        std::fs::write(&cargo, "[package]\nname = \"gate\"\nversion = \"0.9.0\"\n").unwrap();
+        let error = discover(dir.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("the version is 0.9.0") && error.contains("says 1.0.0"),
+            "{error}"
+        );
+        std::fs::write(&cargo, "[package]\nname = \"gate\"\nversion = \"1.0.0\"\n").unwrap();
+        discover(dir.path()).unwrap();
     }
 
     #[test]

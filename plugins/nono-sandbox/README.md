@@ -16,7 +16,7 @@ answers with `nono --silent run --profile <file> --name <session> --no-audit --n
 | Read and write | The run's worktree, its sessions directory and its temporary directory (the request's `read_write` and `dir`), and the devices `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/tty` with `/dev/fd` and `/proc/self/fd`. |
 | Read only | The agent directory and the extensions (the request's `read_only`); the clone whose git directory the worktree uses; the directory of the Pi-Bolt installation (an npm package whole); every existing absolute directory on the run's `PATH` (the toolchains; relative and empty entries are left out); rustup's home and cargo's `registry` and `git` directories when a toolchain of either is on the `PATH` (not the rest of cargo's home, which holds the registry token); the setting `--read-only`; and, on Linux, nono's `system_read_linux_core` group, which every program needs to start. |
 | Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, and not `/tmp`. nono adds base groups to every profile whether the profile names them or not; the profile excludes `system_write_linux`, `system_write_macos` (write access to `/tmp`), `user_tools`, `homebrew_linux` and `homebrew_macos`, and on macOS `system_read_macos` (it reads `/opt`, `/var`, `/private`, `/etc`, `/Library`), with a short list of system directories in its place. |
-| Unix sockets | `linux.af_unix_mediation` is `pathname` and no socket is granted, so a run cannot connect to the user's D-Bus (`systemd-run --user`), Docker or ssh-agent sockets. Without it nono lets a run connect to any pathname socket. With `--unix-sockets allow` the key is left out, for WSL2 (see below), and the launch note says so. |
+| Unix sockets | `linux.af_unix_mediation` is `pathname` and no socket is granted, so a run cannot connect to the user's D-Bus (`systemd-run --user`), Docker or ssh-agent sockets. Without it nono lets a run connect to any pathname socket. With `--unix-sockets allow` the key is left out, only where mediation cannot work (WSL2, see below): Landlock does not gate `connect()` to pathname sockets, so a run can then reach every socket its user may connect to, and through the Docker socket (root on the host), the user D-Bus (`systemd-run --user`), the ssh-agent or, on WSL2 with interop on, the Windows interop socket under `/run/WSL` it can act as the user outside the sandbox. The launch note says so. |
 | Network, mode `moebius` (default) | All outbound access is blocked except TCP to the ports of the router, the gateway and the tool-call check, which must be on the loopback and 1024 or more (`network.block` with `network.connect_port` on Linux, `network.open_port` on macOS). See the limit below. |
 | Network, mode `internet` | Outbound access is not restricted. |
 | Environment | `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lower-case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CARGO_HOME`, `RUSTUP_HOME`, `PI_CODING_AGENT_DIR`, `MOEBIUS` and `MOEBIUS_*`. Nothing else: no provider keys. The profile lists the same names in `environment.allow_vars`. |
@@ -53,7 +53,7 @@ The core's `[[plugins]]` entry has no table of settings, so they are the entry's
 | `--nono <program>` | `nono` | `nono` | The nono program. |
 | `--nono-version <version>` | `nono_version` | `0.81.0` | The nono version the plugin is tested with. Another version stops the plugin at start, since nono is before 1.0 and changes its profiles. |
 | `--network moebius\|internet` | `network` | `moebius` | The network mode. |
-| `--unix-sockets deny\|allow` | `unix_sockets` | `deny` | Whether nono mediates Unix sockets. `allow` leaves a run free to connect to any socket it can reach by path; only for WSL2, where `deny` cannot work. |
+| `--unix-sockets deny\|allow` | `unix_sockets` | `deny` | Whether nono mediates Unix sockets. `allow` leaves a run free to connect to any socket its user may connect to (Docker, the user D-Bus, the ssh-agent, the WSL2 interop socket), which can act as the user outside the sandbox; only where mediation cannot work (WSL2). |
 | `--read-only <path>` | `read_only` | none | An extra path the runs may read; repeat for more. Absolute, without `$` or `*`; the plugin does not start otherwise. |
 | `--exclude-agent <name>` | `exclude_agents` | none | An agent that runs without the sandbox, such as the Moebius agent, which operates the server with `"$MOEBIUS"`; repeat for more. |
 | `--agent-network <name>=<mode>` | `agents.<name>.network` | none | The network mode for one agent; repeat for more. |
@@ -96,6 +96,13 @@ sandbox: a launcher that is not running fails every run, so a run never starts u
 - Toolchains: the lens's `cargo check` needs rustup's home and cargo's sources, which are granted read only when a
   toolchain is on the `PATH`; cargo also wants to write its lock file in its home, which is not granted. Not checked
   against a real Pi-Bolt yet.
+- With `--unix-sockets allow` (WSL2) the sandbox does not contain what a Unix socket can do. Landlock does not gate
+  `connect()` to pathname sockets, so a run can reach any socket its user may connect to, and several of them act as the
+  user outside the sandbox: the Docker socket (root on the host), the user D-Bus (`systemd-run --user` starts an
+  unsandboxed process), the ssh-agent and, on WSL2 with interop on, the Windows interop socket under `/run/WSL` (it
+  starts Windows programs). The filesystem, network and environment limits stay. On WSL2 turn interop off with
+  `[interop]` `enabled=false` in `/etc/wsl.conf`, do not expose the Docker socket, and keep agents that need no
+  sandbox weakening on native Linux.
 - Only Pi-Bolt is launched through a launcher today.
 
 ## Installing
@@ -110,7 +117,8 @@ the launch and the leftovers) and `tests/protocol.rs`, which starts the built pr
 end-to-end tests in `tests/e2e.rs` run with a real nono when `MOEBIUS_E2E_NONO` is set (`1`, or the path of nono) on
 Linux, in a directory under `target/` (not `/tmp`, which a profile must not grant): a sandboxed script reads and writes
 its worktree and nothing else (it cannot write outside it, into the data directory, into the profiles directory or
-`/tmp`, nor read another worktree), cannot connect to a Unix socket, reaches the router's port but no other port in
-mode `moebius` (also on this machine's non-loopback address), and has no provider key; the resolved profile
+`/tmp`, nor read another worktree), cannot connect to a Unix socket (with `--unix-sockets allow` it can, and the
+other limits stay), reaches the router's port but no other port in mode `moebius` (also on this machine's
+non-loopback address), and has no provider key; the resolved profile
 (`nono profile show`) has none of the write groups; the stdin and stdout pass through; and after a stop the sandboxed
 program itself, not only nono, is gone.

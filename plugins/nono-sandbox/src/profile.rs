@@ -490,8 +490,9 @@ pub fn network_note(request: &LaunchRequest, mode: Network, os: &str) -> Option<
 /// A sentence for the run's record when nono does not mediate Unix sockets, which only nono on Linux does.
 pub fn socket_note(settings: &Settings, os: &str) -> Option<String> {
     (settings.unix_sockets == UnixSockets::Allow && os == "linux").then(|| {
-        "Unix sockets are not mediated (unix_sockets = allow): the run can connect to any socket it can reach by \
-         path, such as the D-Bus, Docker or ssh-agent sockets of its user"
+        "Unix sockets are not mediated (unix_sockets = allow): the run can connect to any socket its user can reach \
+         by path, such as the Docker, D-Bus or ssh-agent sockets or, on WSL2, the Windows interop socket, and so \
+         act as its user outside the sandbox"
             .to_string()
     })
 }

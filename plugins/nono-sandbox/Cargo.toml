@@ -1,6 +1,6 @@
 [package]
 name = "moebius-plugin-nono-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Moebius launcher plugin that runs every Pi-Bolt process in a nono sandbox."
 edition.workspace = true
 rust-version.workspace = true
