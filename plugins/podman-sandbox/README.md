@@ -21,6 +21,7 @@ For every launch the plugin answers with itself, `podman-sandbox run`, around
 | Read and write | The run's worktree, its agent directory, its sessions directory and its temporary directory (the request's `read_write` and `dir`), at the same paths as on the host. The run is the server's user (`keep-id`), so what it writes is the user's. |
 | Read only | The lens and the bridge and the agent's own extensions and skills (the request's `read_only`), the clone whose git directory the worktree uses, and Pi-Bolt's installation, each at its host path. |
 | Its own | The image (its `PATH`, its toolchains, its certificates), its own `/tmp`, a fresh `HOME` at `/home/moebius` (a tmpfs of the run) and the `--cache` volumes. Everything the run changes outside the mounts goes with the container. |
+| The repository's mounts | The folders and volumes a person gave the repository on its page ([Mounts](#mounts)). |
 | Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, not other worktrees, not the user's home, not the host's `/tmp` and no socket of the host. |
 | Network, mode `moebius` (default) | pasta with `--splice-only`: the container has no interface but its loopback, on which the ports of the router, the gateway and the tool-call check are forwarded to the same ports of the host's loopback. Nothing else answers: no other port of the host, no other machine, no DNS. Unlike nono on Linux this holds by host, not by port. |
 | Network, mode `internet` | The same forwarded ports, and general outbound access through pasta. The host's other loopback ports stay out of reach. |
@@ -103,6 +104,35 @@ itself, then `--image`. Left empty, the next one applies.
 - Built images are labelled `moebius.plugin=podman-sandbox`; the plugin does not remove the ones a changed Dockerfile left
   behind (`podman image prune --all --filter label=moebius.plugin=podman-sandbox` does).
 - Only a person can change them, never an agent: Moebius refuses the Moebius agent's change of a project or app setting.
+
+## Mounts
+
+A repository's runs can see more than their worktree: folders of the host, such as fixtures or a sibling project the
+build reads, and named Podman volumes kept between runs, such as that repository's own package cache. A person gives
+them on the repository's page, under **Mounts**, as a table; the setting `mounts` behind it holds one per line:
+
+```text
+/srv/fixtures/shop:/fixtures
+/srv/assets:/assets:rw
+volume:shop-cargo:/home/moebius/.cargo
+```
+
+- `<host path>:<container path>[:ro|:rw]` is a folder of the host, read only unless `rw`, mounted with its links
+  resolved. What a run writes there, the next runs see.
+- `volume:<name>:<container path>[:ro|:rw]` is a named volume, read and write unless `ro`, owned by the run's user.
+- An empty line and a line starting with `#` are skipped.
+
+A mount that would give a run more than the folder it names fails the run, with a sentence naming its line: a host
+path that does not exist, is `/`, the home directory or a directory around it, inside a hidden directory of the home
+(`.ssh`, `.config`, …, where keys and tokens are kept), Moebius's data directory or around or inside it, or a path the
+run already has; a container path that is not absolute or has `.` or `..`, is `/`, under `/proc`, `/sys` or `/dev`,
+the run's `HOME` or around it (inside it is fine), a path the run already has or around or inside it, a `--cache`'s, or
+another mount's.
+
+A run does not need git credentials: Moebius pushes the run's branch itself, outside the container, with the forge's
+token. A key a private dependency needs is a file like any other; mount a key made for that alone (a read-only deploy
+key, a registry token), never your own `~/.ssh`, since the run can read whatever it is given and, with the network mode
+`internet`, send it anywhere.
 
 ## Settings
 

@@ -10,6 +10,8 @@
 //! - read only, at the same paths: the request's `read_only` paths (the lens, the bridge, the agent's extensions and
 //!   skills), the clone whose git directory the worktree uses, and the directory of the harness's installation;
 //! - its image, its own `/tmp`, a fresh `HOME` ([`HOME`], a tmpfs of the run) and the `caches` setting's volumes;
+//! - the folders and volumes a person gave the repository on its page (the project setting
+//!   [`MOUNTS`](crate::mounts::MOUNTS)), each checked by [`crate::mounts`];
 //! - the network, through pasta: in mode `moebius` no interface but the loopback, on which the ports of the router,
 //!   gateway and check addresses are forwarded to the same ports of the host's loopback (`--splice-only`), so
 //!   nothing else is reachable, of the host or of any other machine; in mode `internet` the same ports and general
@@ -38,6 +40,7 @@ use std::path::{Path, PathBuf};
 
 use moebius_plugin_api::{LaunchRequest, Urls};
 
+use crate::mounts::{Granted, MOUNTS, volumes};
 use crate::settings::{Network, Settings};
 
 /// The run's `HOME` in the container, a tmpfs owned by the run's user.
@@ -142,6 +145,8 @@ pub enum ContainerError {
          holds a line break"
     )]
     BadVariable(String),
+    #[error(transparent)]
+    Mounts(#[from] crate::mounts::MountError),
 }
 
 /// The names of the environment variables the container keeps; others are dropped, provider keys among them. `PATH`,
@@ -468,6 +473,34 @@ pub fn build(
         mounts.entry(mountable(&path)?).or_insert(false);
     }
 
+    // The repository's own mounts, checked against everything above: Moebius's data directory is the clone's
+    // `<data_dir>/repos/<name>`.
+    let own: Vec<PathBuf> = mounts.keys().map(PathBuf::from).collect();
+    let data = request
+        .clone
+        .as_deref()
+        .map(Path::new)
+        .and_then(|clone| clone.parent())
+        .filter(|repos| repos.file_name().is_some_and(|name| name == "repos"))
+        .and_then(Path::parent);
+    let home = request
+        .env
+        .get("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let extra = match written(&request.project_settings, MOUNTS) {
+        Some(text) => volumes(
+            text,
+            &Granted {
+                own: &own,
+                data,
+                caches: &settings.caches,
+                home: home.as_deref(),
+            },
+        )?,
+        None => Vec::new(),
+    };
+
     let mut args: Vec<String> = [
         "run",
         "--rm",
@@ -506,6 +539,10 @@ pub fn build(
         let options = if *writable { "z" } else { "ro,z" };
         args.push("--volume".into());
         args.push(format!("{path}:{path}:{options}"));
+    }
+    for volume in extra {
+        args.push("--volume".into());
+        args.push(volume);
     }
     args.extend([
         "--workdir".to_string(),
@@ -761,6 +798,44 @@ mod tests {
         other.clone = Some(world.root.join("data/repos/other").to_string_lossy().into());
         let error = build(&other, &settings, Network::Moebius, "n").unwrap_err();
         assert!(error.to_string().contains("repository other"), "{error}");
+    }
+
+    #[test]
+    fn the_repositorys_mounts_are_given_to_the_run_and_one_that_reaches_the_data_directory_fails_it()
+     {
+        let world = world();
+        std::fs::create_dir_all(world.root.join("fixtures")).unwrap();
+        let at = |p: &str| world.root.join(p).to_string_lossy().into_owned();
+        let mut request = request(&world);
+        request.project_settings.insert(
+            MOUNTS.into(),
+            format!(
+                "{}:/fixtures\nvolume:shop-cargo:/home/moebius/.cargo\n",
+                at("fixtures")
+            ),
+        );
+        let (args, _) = build(&request, &settings(), Network::Moebius, "n").unwrap();
+        let volumes = after(&args, "--volume");
+        assert!(volumes.contains(&format!("{}:/fixtures:ro,z", at("fixtures")).as_str()));
+        assert!(volumes.contains(&"shop-cargo:/home/moebius/.cargo:U,z"));
+        // They come before the image, as every option does.
+        let image = args.iter().position(|a| a == "localhost/base").unwrap();
+        assert!(args[..image].contains(&"shop-cargo:/home/moebius/.cargo:U,z".to_string()));
+
+        // The clone's `<data_dir>/repos/<name>` names the data directory, which no mount reaches.
+        request
+            .project_settings
+            .insert(MOUNTS.into(), format!("{}:/secrets", at("data")));
+        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        assert!(matches!(error, ContainerError::Mounts(_)), "{error}");
+        assert!(error.to_string().contains("data directory"), "{error}");
+        // Nor the path where the worktree is.
+        request.project_settings.insert(
+            MOUNTS.into(),
+            format!("{}:{}", at("fixtures"), at("data/worktrees/run-7/src")),
+        );
+        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        assert!(error.to_string().contains("already has"), "{error}");
     }
 
     #[test]

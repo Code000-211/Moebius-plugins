@@ -22,6 +22,7 @@ use crate::container::{
     BASE_ARG, BASE_DOCKERFILE, DOCKERFILE, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, build, env_lines,
     passed_env,
 };
+use crate::mounts::MOUNTS;
 use crate::settings::{Network, Settings};
 
 /// The variables of the plugin's own environment that Podman reads to find its storage, its configuration and its
@@ -251,6 +252,17 @@ impl Plugin for PodmanSandbox {
                 ),
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
+            }, PluginSetting {
+                key: MOUNTS.into(),
+                label: "Mounts".into(),
+                description: "Folders of the host and named Podman volumes this repository's runs see, one per \
+                     line: <host path>:<container path>[:ro|:rw], read only unless rw, or \
+                     volume:<name>:<container path>[:ro|:rw], read and write unless ro and kept between runs. A \
+                     mount that would reach Moebius's data directory, a hidden directory of the home, or a path the \
+                     run already has fails the run."
+                    .into(),
+                input: SettingInput::Code,
+                language: None,
             }],
             app_settings: vec![PluginSetting {
                 key: BASE_DOCKERFILE.into(),
@@ -542,6 +554,12 @@ mod tests {
             manifest.settings_ui.as_deref(),
             Some(crate::page::source().as_str())
         );
+        let keys: Vec<&str> = manifest
+            .project_settings
+            .iter()
+            .map(|setting| setting.key.as_str())
+            .collect();
+        assert_eq!(keys, [DOCKERFILE, MOUNTS]);
         assert_eq!(
             (manifest.name.as_str(), manifest.kinds),
             (NAME, vec![Kind::Launcher])

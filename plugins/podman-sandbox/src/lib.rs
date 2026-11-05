@@ -10,13 +10,15 @@
 //!
 //! The parts: [`settings`] (what `moebius.toml` passes as the plugin's arguments), [`check`] (the platform, Podman
 //! and the images, checked once at start), [`container`] (the `podman run` arguments of one run, as data),
-//! [`launch`] (the plugin itself: the two methods), [`commands`] (the subcommands `run` and `stop` that the
+//! [`mounts`] (the folders and volumes a person gives a repository's runs), [`launch`] (the plugin itself: the two
+//! methods), [`commands`] (the subcommands `run` and `stop` that the
 //! wrapped launch and its stop command start) and [`page`] (its page for its settings in the web app, with presets).
 
 pub mod check;
 pub mod commands;
 pub mod container;
 pub mod launch;
+pub mod mounts;
 pub mod page;
 pub mod settings;
 
