@@ -114,6 +114,11 @@ mod linux {
         assert_eq!(setting["key"], "dockerfile");
         assert_eq!(setting["input"], "code");
         assert_eq!(setting["language"], "dockerfile");
+        // The server is asked for the Dockerfile that theirs start from.
+        let setting = &manifest["manifest"]["app_settings"][0];
+        assert_eq!(setting["key"], "base_dockerfile");
+        assert_eq!(setting["input"], "code");
+        assert_eq!(setting["language"], "dockerfile");
 
         let reply = plugin.call(1, "launch", launch_params(&root, "Coder", Value::Null));
         assert_eq!(reply["type"], "reply", "{reply}");
@@ -199,6 +204,38 @@ mod linux {
         assert_eq!(std::fs::read_dir(context).unwrap().count(), 1);
         assert_eq!(reply["result"]["remove"], json!([args[at + 2]]));
         std::fs::remove_dir_all(context).unwrap();
+
+        // With a base Dockerfile for the server too, two directories are built, the base first, and the repository's
+        // image is built on it.
+        let mut params = launch_params(&root, "Coder", Value::Null);
+        params["repository"] = json!("shop");
+        params["project_settings"] =
+            json!({"dockerfile": "ARG MOEBIUS_BASE\nFROM ${MOEBIUS_BASE}\n"});
+        params["app_settings"] = json!({"base_dockerfile": "FROM debian\n"});
+        let reply = plugin.call(7, "launch", params);
+        let args = strings(&reply["result"]["args"]);
+        let builds: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| **a == "--build")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(builds.len(), 2, "{args:?}");
+        let (base, own) = (builds[0], builds[1]);
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&args[base + 2]).join("Dockerfile")).unwrap(),
+            "FROM debian\n"
+        );
+        assert_eq!(args[own + 3], "--base");
+        assert_eq!(args[own + 4], args[base + 1]);
+        assert_ne!(args[own + 1], args[base + 1]);
+        assert_eq!(
+            reply["result"]["remove"],
+            json!([args[base + 2], args[own + 2]])
+        );
+        for dir in [&args[base + 2], &args[own + 2]] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
 
         let reply = plugin.call(4, "leftovers", json!({"running": []}));
         assert_eq!(reply["result"], json!({"cleanup": [], "remove": []}));

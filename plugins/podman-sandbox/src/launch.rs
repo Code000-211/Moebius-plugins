@@ -17,9 +17,10 @@ use moebius_plugin_api::{
 use serde_json::Value;
 
 use crate::NAME;
-use crate::commands::{is_container_name, run_args, stop_command};
+use crate::commands::{Build, is_container_name, run_args, stop_command};
 use crate::container::{
-    DOCKERFILE, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, build, env_lines, passed_env,
+    BASE_ARG, BASE_DOCKERFILE, DOCKERFILE, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, build, env_lines,
+    passed_env,
 };
 use crate::settings::{Network, Settings};
 
@@ -83,12 +84,20 @@ impl PodmanSandbox {
         let mode = self.settings.network_for(&request.run.agent);
         let name = container_name(request.run.id);
         let (args, image) = build(&request, &self.settings, mode, &name).map_err(failed)?;
-        // A repository's Dockerfile is built by the wrapped launch, which has no time limit, from a directory that
-        // holds it alone; the core removes the directory once the run has ended.
-        let context = match &image.dockerfile {
-            Some(dockerfile) => Some(build_context(&name, dockerfile)?),
-            None => None,
-        };
+        // Dockerfiles are built by the wrapped launch, which has no time limit, each from a directory that holds it
+        // alone; the core removes the directories once the run has ended.
+        let builds = image
+            .builds
+            .iter()
+            .enumerate()
+            .map(|(at, dockerfile)| {
+                Ok(Build {
+                    image: dockerfile.image.clone(),
+                    dir: build_context(&format!("{name}-{at}"), &dockerfile.text)?,
+                    base: dockerfile.base.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, PluginError>>()?;
 
         let passed = passed_env(&request.env);
         // A variable that could not reach the container fails the launch here, with its name, not in the container.
@@ -105,12 +114,7 @@ impl PodmanSandbox {
         };
         Ok(LaunchAnswer::Wrapped(Box::new(Wrapped {
             program: self.exe.to_string_lossy().into_owned(),
-            args: run_args(
-                &self.settings.podman,
-                &pass,
-                context.as_deref().map(|dir| (image.name.as_str(), dir)),
-                args,
-            ),
+            args: run_args(&self.settings.podman, &pass, &builds, args),
             env,
             urls: Default::default(),
             stop: Some(stop_command(
@@ -120,16 +124,17 @@ impl PodmanSandbox {
                 &self.podman_env,
             )),
             cleanup: None,
-            remove: context
+            remove: builds
                 .iter()
-                .map(|dir| dir.to_string_lossy().into_owned())
+                .map(|build| build.dir.to_string_lossy().into_owned())
                 .collect(),
             note: Some(format!(
                 "in the Podman container {name} of the image {}{}, which reaches {reach}",
                 image.name,
-                match image.dockerfile {
-                    Some(_) => " (the repository's Dockerfile)",
-                    None => "",
+                match image.builds.as_slice() {
+                    [] => "",
+                    [_] => " (built from a Dockerfile)",
+                    _ => " (built from a Dockerfile on the server's base Dockerfile)",
                 },
             )),
         })))
@@ -199,7 +204,7 @@ fn build_context(name: &str, dockerfile: &str) -> Result<PathBuf, PluginError> {
         .and_then(|()| std::fs::write(dir.join("Dockerfile"), dockerfile))
         .map_err(|e| {
             PluginError::Failed(format!(
-                "cannot write the repository's Dockerfile to {}: {e}",
+                "cannot write a Dockerfile to {}: {e}",
                 dir.display()
             ))
         })?;
@@ -237,14 +242,29 @@ impl Plugin for PodmanSandbox {
             project_settings: vec![PluginSetting {
                 key: DOCKERFILE.into(),
                 label: "Dockerfile".into(),
-                description: "The image of this repository's runs: the plugin builds it with Podman before the \
-                              first run that needs it, from an empty build context, and builds it again when it \
-                              changes. Left empty, the runs use --repo-image or --image."
-                    .into(),
+                description: format!(
+                    "The image of this repository's runs: the plugin builds it with Podman before the first run \
+                     that needs it, from an empty build context, and builds it again when it changes. When the \
+                     server has a base Dockerfile (on the Settings page), start from it with `ARG {BASE_ARG}` and \
+                     `FROM ${{{BASE_ARG}}}`. Left empty, the runs use --repo-image, else the base Dockerfile, \
+                     else --image."
+                ),
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
             }],
-            app_settings: Vec::new(),
+            app_settings: vec![PluginSetting {
+                key: BASE_DOCKERFILE.into(),
+                label: "Base Dockerfile".into(),
+                description: format!(
+                    "The image every repository's Dockerfile starts from: what the harness needs in a container \
+                     (a glibc-based system with /bin/sh, node if the harness is a node package, git) and the \
+                     tools all projects share. Built like a repository's Dockerfile and again when it changes, \
+                     which builds the repositories' images again. A repository's Dockerfile begins with \
+                     `ARG {BASE_ARG}` and `FROM ${{{BASE_ARG}}}`; a repository without one runs on this image."
+                ),
+                input: SettingInput::Code,
+                language: Some("dockerfile".into()),
+            }],
         }
     }
 

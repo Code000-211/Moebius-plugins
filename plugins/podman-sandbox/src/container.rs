@@ -23,8 +23,11 @@
 //!
 //! The image is the repository's own when a person gave it a Dockerfile on its page in Moebius (the project setting
 //! [`DOCKERFILE`]): it is named by the Dockerfile's hash ([`built_image`]), so a changed Dockerfile is a new image,
-//! and `podman-sandbox run` builds it before the container starts when Podman does not have it yet. Without one, it is
-//! the `--repo-image` of the repository, else `--image`.
+//! and `podman-sandbox run` builds it before the container starts when Podman does not have it yet. A Dockerfile for
+//! the whole server (the app setting [`BASE_DOCKERFILE`]) is built the same way and is what a repository's Dockerfile
+//! starts from, through the build argument [`BASE_ARG`]; a repository without a Dockerfile of its own runs on it
+//! when it has no `--repo-image`. Without any of those, the image is the `--repo-image` of the repository, else
+//! `--image`.
 //!
 //! The directory of the harness's installation comes from the environment, not from the request, so one that
 //! contains the worktree, the clone or another path the run writes fails the launch: it would make the data
@@ -50,15 +53,31 @@ pub const NAME_PREFIX: &str = "moebius-run-";
 /// The key of the project setting that holds a repository's Dockerfile.
 pub const DOCKERFILE: &str = "dockerfile";
 
+/// The key of the app setting that holds the Dockerfile every repository's Dockerfile starts from.
+pub const BASE_DOCKERFILE: &str = "base_dockerfile";
+
+/// The build argument that names the base image when a repository's Dockerfile is built on one, for its
+/// `ARG MOEBIUS_BASE` and `FROM ${MOEBIUS_BASE}`.
+pub const BASE_ARG: &str = "MOEBIUS_BASE";
+
 /// The repository of the images built from Dockerfiles; the tag is the Dockerfile's hash.
 pub const BUILT_IMAGE: &str = "localhost/moebius-podman-sandbox";
 
-/// The image a run uses, and the Dockerfile to build it from when Podman does not have it yet; none for an image of
-/// the settings, which the checks at start found.
+/// A Dockerfile to build into `image` when Podman does not have it yet. `base` is the image it starts from, given to
+/// the build as [`BASE_ARG`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dockerfile {
+    pub image: String,
+    pub text: String,
+    pub base: Option<String>,
+}
+
+/// The image a run uses, and the Dockerfiles to build, in order, before it exists; none for an image of the
+/// settings, which the checks at start found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
     pub name: String,
-    pub dockerfile: Option<String>,
+    pub builds: Vec<Dockerfile>,
 }
 
 /// The name of the image built from `dockerfile`: the first 16 bytes of its SHA-256 in hexadecimal as the tag, so the
@@ -68,6 +87,12 @@ pub fn built_image(dockerfile: &str) -> String {
     let hash = Sha256::digest(dockerfile.as_bytes());
     let tag: String = hash[..16].iter().map(|b| format!("{b:02x}")).collect();
     format!("{BUILT_IMAGE}:{tag}")
+}
+
+/// The name of the image built from `dockerfile` on the image `base`: named by both, so a changed base is a new
+/// image for every repository.
+pub fn built_image_on(base: &str, dockerfile: &str) -> String {
+    built_image(&format!("{base}\n{dockerfile}"))
 }
 
 /// What the container starts with `/bin/sh -c`: it reads `NAME=value` lines from the standard input up to an empty
@@ -92,8 +117,9 @@ pub enum ContainerError {
     )]
     NotLoopback(String),
     #[error(
-        "there is no image for {0}: give the repository a Dockerfile on its page in Moebius, set --image, or \
-         --repo-image <repository>=<image> for its repository, or exclude the agent"
+        "there is no image for {0}: give the repository a Dockerfile on its page in Moebius, give the server a base \
+         Dockerfile on the Settings page, set --image, or --repo-image <repository>=<image> for its repository, or \
+         exclude the agent"
     )]
     NoImage(String),
     #[error(
@@ -191,19 +217,56 @@ pub fn repository(request: &LaunchRequest) -> Option<String> {
         .map(|name| name.to_string_lossy().into_owned())
 }
 
-/// The image of the run: built from the repository's Dockerfile when it has one, else the settings' image for it.
-pub fn image(request: &LaunchRequest, settings: &Settings) -> Result<Image, ContainerError> {
-    if let Some(dockerfile) = request
-        .project_settings
-        .get(DOCKERFILE)
+/// The text of the setting `key` of `settings`, when a person wrote something in it.
+fn written<'a>(settings: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    settings
+        .get(key)
+        .map(String::as_str)
         .filter(|text| !text.trim().is_empty())
-    {
+}
+
+/// The image of the run, first that applies: built from the repository's Dockerfile (on the server's base Dockerfile
+/// when there is one), the `--repo-image` of the repository, built from the server's base Dockerfile, else `--image`.
+pub fn image(request: &LaunchRequest, settings: &Settings) -> Result<Image, ContainerError> {
+    let base = written(&request.app_settings, BASE_DOCKERFILE).map(|text| Dockerfile {
+        image: built_image(text),
+        text: text.to_string(),
+        base: None,
+    });
+    if let Some(text) = written(&request.project_settings, DOCKERFILE) {
+        let own = match &base {
+            Some(base) => Dockerfile {
+                image: built_image_on(&base.image, text),
+                text: text.to_string(),
+                base: Some(base.image.clone()),
+            },
+            None => Dockerfile {
+                image: built_image(text),
+                text: text.to_string(),
+                base: None,
+            },
+        };
         return Ok(Image {
-            name: built_image(dockerfile),
-            dockerfile: Some(dockerfile.clone()),
+            name: own.image.clone(),
+            builds: base.into_iter().chain([own]).collect(),
         });
     }
     let repository = repository(request);
+    if let Some(name) = repository
+        .as_deref()
+        .and_then(|name| settings.repo_images.get(name))
+    {
+        return Ok(Image {
+            name: name.clone(),
+            builds: Vec::new(),
+        });
+    }
+    if let Some(base) = base {
+        return Ok(Image {
+            name: base.image.clone(),
+            builds: vec![base],
+        });
+    }
     let name = settings.image_for(repository.as_deref()).ok_or_else(|| {
         ContainerError::NoImage(match &repository {
             Some(repo) => format!("the repository {repo}"),
@@ -215,7 +278,7 @@ pub fn image(request: &LaunchRequest, settings: &Settings) -> Result<Image, Cont
     })?;
     Ok(Image {
         name: name.to_string(),
-        dockerfile: None,
+        builds: Vec::new(),
     })
 }
 
@@ -681,7 +744,7 @@ mod tests {
             .insert("shop".into(), "localhost/shop".into());
         let (_, image) = build(&request(&world), &settings, Network::Moebius, "n").unwrap();
         assert_eq!(image.name, "localhost/shop");
-        assert_eq!(image.dockerfile, None);
+        assert!(image.builds.is_empty());
 
         let mut chat = request(&world);
         chat.clone = None;
@@ -715,7 +778,9 @@ mod tests {
         let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
         assert!(image.name.starts_with("localhost/moebius-podman-sandbox:"));
         assert_eq!(image.name.len(), BUILT_IMAGE.len() + 1 + 32);
-        assert_eq!(image.dockerfile.as_deref(), Some("FROM debian\n"));
+        assert_eq!(image.builds.len(), 1);
+        assert_eq!(image.builds[0].text, "FROM debian\n");
+        assert_eq!(image.builds[0].base, None);
         assert!(args.contains(&image.name));
 
         // The same text is the same image; another text another one.
@@ -728,7 +793,77 @@ mod tests {
             .insert(DOCKERFILE.into(), " \n".into());
         let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
         assert_eq!(image.name, "localhost/shop");
-        assert_eq!(image.dockerfile, None);
+        assert!(image.builds.is_empty());
+    }
+
+    #[test]
+    fn the_servers_base_dockerfile_is_built_first_and_a_repositorys_dockerfile_is_built_on_it() {
+        let world = world();
+        let settings = settings();
+        let mut request = request(&world);
+        request
+            .app_settings
+            .insert(BASE_DOCKERFILE.into(), "FROM debian\n".into());
+        request
+            .project_settings
+            .insert(DOCKERFILE.into(), "FROM ${MOEBIUS_BASE}\n".into());
+        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let base = built_image("FROM debian\n");
+        assert_eq!(image.builds.len(), 2);
+        assert_eq!(image.builds[0].image, base);
+        assert_eq!(image.builds[0].base, None);
+        assert_eq!(image.builds[1].base.as_deref(), Some(base.as_str()));
+        // The run is of the last one, which is named by the base too: another base is another image.
+        assert_eq!(image.name, image.builds[1].image);
+        assert_eq!(image.name, built_image_on(&base, "FROM ${MOEBIUS_BASE}\n"));
+        assert_ne!(
+            image.name,
+            built_image_on(&built_image("FROM debian:12\n"), "FROM ${MOEBIUS_BASE}\n")
+        );
+        assert!(args.contains(&image.name));
+
+        // Without a base the repository's Dockerfile is built alone, as it always was.
+        request.app_settings.clear();
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, built_image("FROM ${MOEBIUS_BASE}\n"));
+        assert_eq!(image.builds.len(), 1);
+        assert_eq!(image.builds[0].base, None);
+    }
+
+    #[test]
+    fn a_repository_without_a_dockerfile_runs_on_the_base_after_its_own_image_and_before_the_default()
+     {
+        let world = world();
+        let mut settings = settings();
+        let mut request = request(&world);
+        request
+            .app_settings
+            .insert(BASE_DOCKERFILE.into(), "FROM debian\n".into());
+
+        // The default image is only for what has nothing else.
+        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, built_image("FROM debian\n"));
+        assert_eq!(image.builds.len(), 1);
+        assert!(args.contains(&image.name));
+
+        // The image named for the repository is a decision about that repository.
+        settings
+            .repo_images
+            .insert("shop".into(), "localhost/shop".into());
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, "localhost/shop");
+        assert!(image.builds.is_empty());
+
+        // A chat without a repository runs on the base too, and a blank base is none.
+        settings.repo_images.clear();
+        request.clone = None;
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, built_image("FROM debian\n"));
+        request
+            .app_settings
+            .insert(BASE_DOCKERFILE.into(), "  \n".into());
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, "localhost/base");
     }
 
     #[test]
