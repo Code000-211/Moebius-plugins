@@ -7,9 +7,9 @@
 //! the devices a program needs by name. On Linux it includes nono's system read group, and on macOS the system
 //! directories listed in [`MACOS_READ`]. It adds exactly:
 //!
-//! - read and write: the request's `read_write` paths and the working directory (the worktree, the sessions
-//!   directory, the run's temporary directory), and the devices of [`DEVICES`];
-//! - read only: the request's `read_only` paths (the agent directory, the extensions), the clone whose git directory
+//! - read and write: the request's `read_write` paths and the working directory (the worktree, the agent
+//!   directory, the sessions directory, the run's temporary directory), and the devices of [`DEVICES`];
+//! - read only: the request's `read_only` paths (the extensions), the clone whose git directory
 //!   the worktree uses, the directory of the harness's installation, the directories on the run's `PATH` that exist
 //!   (the toolchains), the rustup and cargo directories a toolchain on `PATH` needs, and the `read_only` setting;
 //! - the network: in mode `moebius` all outbound access is blocked except TCP to the ports of the request's router,
@@ -531,12 +531,10 @@ mod tests {
                 ("TMPDIR".to_string(), "/data/runs/7/tmp".to_string()),
             ]),
             dir: "/data/worktrees/run-7".into(),
-            read_only: vec![
-                "/data/runs/7/agent".into(),
-                "/data/extensions/bridge".into(),
-            ],
+            read_only: vec!["/data/extensions/bridge".into()],
             read_write: vec![
                 "/data/worktrees/run-7".into(),
+                "/data/runs/7/agent".into(),
                 "/data/runs/7/sessions".into(),
                 "/data/runs/7/tmp".into(),
             ],
@@ -579,6 +577,7 @@ mod tests {
             strings(&profile, "filesystem", "allow"),
             [
                 "/data/worktrees/run-7",
+                "/data/runs/7/agent",
                 "/data/runs/7/sessions",
                 "/data/runs/7/tmp",
                 "/dev/fd",
@@ -587,7 +586,6 @@ mod tests {
         );
         let read = strings(&profile, "filesystem", "read");
         for path in [
-            "/data/runs/7/agent",
             "/data/extensions/bridge",
             "/data/repos/demo",
             "/opt/pi-bolt/bin",
