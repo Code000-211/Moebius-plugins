@@ -23,8 +23,8 @@ For every launch the plugin answers with itself, `podman-sandbox run`, around
 | Its own | The image (its `PATH`, its toolchains, its certificates), its own `/tmp`, a fresh `HOME` at `/home/moebius` (a tmpfs of the run) and the `--cache` volumes. Everything the run changes outside the mounts goes with the container. |
 | The repository's mounts | The folders and volumes a person gave the repository on its page ([Mounts](#mounts)). |
 | Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, not other worktrees, not the user's home, not the host's `/tmp` and no socket of the host. |
-| Network, mode `moebius` (default) | pasta with `--splice-only`: the container has no interface but its loopback, on which the ports of the router, the gateway and the tool-call check are forwarded to the same ports of the host's loopback. Nothing else answers: no other port of the host, no other machine, no DNS. Unlike nono on Linux this holds by host, not by port. |
-| Network, mode `internet` | The same forwarded ports, and general outbound access through pasta. The host's other loopback ports stay out of reach. |
+| Network, mode `moebius` | pasta with `--splice-only`: the container has no interface but its loopback, on which the ports of the router, the gateway and the tool-call check are forwarded to the same ports of the host's loopback. Nothing else answers: no other port of the host, no other machine, no DNS. Unlike nono on Linux this holds by host, not by port. |
+| Network, mode `internet` (default) | The same forwarded ports, and general outbound access through pasta. The host's other loopback ports stay out of reach. |
 | Environment | `HOME` (`/home/moebius`), `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lower-case), `PI_CODING_AGENT_DIR`, `MOEBIUS` and `MOEBIUS_*`, and the image's own. No provider keys. |
 
 **The run token** reaches the container through its standard input, not through Podman. `podman-sandbox run` starts
@@ -143,7 +143,7 @@ The core's `[[plugins]]` entry has no table of settings, so they are the entry's
 | `--podman <program>` | `podman` | `podman` | The Podman program. |
 | `--image <image>` | `image` | none | The image of a run whose repository has none of its own, and of a chat without a repository. |
 | `--repo-image <repository>=<image>` | `repositories.<name>.image` | none | The image of one repository's runs, by its name in Moebius, when it has no Dockerfile of its own; repeat for more. |
-| `--network moebius\|internet` | `network` | `moebius` | The network mode. |
+| `--network moebius\|internet` | `network` | `internet` | The network mode. With `moebius` a run reaches only the ports of the router, the gateway and the check; with `internet` it also reaches the internet, so it can send out whatever it can read. |
 | `--agent-network <name>=<mode>` | `agents.<name>.network` | none | The network mode for one agent; repeat for more. |
 | `--cache <volume>:<path>` | `caches` | none | A named Podman volume mounted at an absolute path of the container and kept between runs, such as a package manager's cache; repeat for more. Every run of every agent shares it, so one run can leave something in it that the next one uses. Prefer caches that check what they hold (npm, cargo and pip check checksums). |
 | `--exclude-agent <name>` | `exclude_agents` | none | An agent that runs without the sandbox, such as the Moebius agent, which operates the server with `"$MOEBIUS"`; repeat for more. |

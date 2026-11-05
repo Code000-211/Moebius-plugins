@@ -3,7 +3,7 @@
 name = "podman-sandbox"
 version = "0.1.0"
 kind = "plugin"
-description = "Runs every Pi-Bolt process in a rootless Podman container of the project's image, built from a Dockerfile set on the repository's page, on a base Dockerfile set for the whole server, or named in its settings: its worktree, a few read-only paths and, by default, only the Moebius router."
+description = "Runs every Pi-Bolt process in a rootless Podman container of the project's image, built from a Dockerfile set on the repository's page, on a base Dockerfile set for the whole server, or named in its settings: its worktree, a few read-only paths and general outbound network access (the mode `moebius` limits it to the Moebius router)."
 license = "Apache-2.0"
 homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/podman-sandbox"
 
@@ -56,7 +56,7 @@ name = "network"
 flag = "--network"
 type = "string"
 choices = ["moebius", "internet"]
-default = "moebius"
+default = "internet"
 description = "moebius: a run reaches only the router's, the gateway's and the tool-call check's ports on the host's loopback, and nothing of any other machine. internet: those and general outbound access."
 
 [[plugin.settings]]

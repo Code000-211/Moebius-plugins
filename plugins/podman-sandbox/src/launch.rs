@@ -384,7 +384,11 @@ mod tests {
     #[test]
     fn a_launch_is_this_program_around_podman_run() {
         let world = world();
-        let wrapped = wrapped(plugin(|_| {}).launch(request(&world, "Coder")).unwrap());
+        let wrapped = wrapped(
+            plugin(|s| s.network = Network::Moebius)
+                .launch(request(&world, "Coder"))
+                .unwrap(),
+        );
         assert_eq!(wrapped.program, "/opt/plugins/podman-sandbox");
         assert_eq!(
             &wrapped.args[..7],

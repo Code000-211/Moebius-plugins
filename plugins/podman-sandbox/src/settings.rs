@@ -6,7 +6,7 @@
 //! | `--podman <program>` | `podman` | `podman` |
 //! | `--image <image>` | `image` | none |
 //! | `--repo-image <repository>=<image>` (repeatable) | `repositories.<name>.image` | none |
-//! | `--network moebius\|internet` | `network` | `moebius` |
+//! | `--network moebius\|internet` | `network` | `internet` |
 //! | `--agent-network <name>=<mode>` (repeatable) | `agents.<name>.network` | none |
 //! | `--cache <volume>:<path>` (repeatable) | `caches` | none |
 //! | `--exclude-agent <name>` (repeatable) | `exclude_agents` | none |
@@ -79,7 +79,7 @@ impl Default for Settings {
             podman: "podman".into(),
             image: None,
             repo_images: BTreeMap::new(),
-            network: Network::Moebius,
+            network: Network::Internet,
             agent_network: BTreeMap::new(),
             caches: Vec::new(),
             exclude_agents: BTreeSet::new(),
@@ -195,7 +195,7 @@ mod tests {
         let settings = parse(&[]).unwrap();
         assert_eq!(settings.podman, "podman");
         assert_eq!(settings.image, None);
-        assert_eq!(settings.network, Network::Moebius);
+        assert_eq!(settings.network, Network::Internet);
         assert!(settings.repo_images.is_empty() && settings.caches.is_empty());
         assert!(settings.exclude_agents.is_empty() && settings.agent_network.is_empty());
     }

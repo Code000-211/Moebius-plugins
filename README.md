@@ -35,7 +35,7 @@ defaults and the targets it is built for. The format is in `docs/reference/packa
 | Package | Kind | What it does |
 |---|---|---|
 | [`nono-sandbox`](plugins/nono-sandbox/README.md) | plugin, launcher | Starts every Pi-Bolt process in a [nono](https://github.com/nolabs-ai/nono) sandbox (Landlock on Linux, Seatbelt on macOS): the run sees its worktree and a few read-only paths, and by default reaches only Moebius's ports (on Linux nono filters by port, so those ports are open on every host; macOS is experimental). |
-| [`podman-sandbox`](plugins/podman-sandbox/README.md) | plugin, launcher | Starts every Pi-Bolt process in a rootless [Podman](https://podman.io) container of an image built for the project, with its dependencies and tools (Linux): the run sees its worktree and a few read-only paths, and by default reaches only Moebius's ports on the host's loopback and nothing of any other machine. |
+| [`podman-sandbox`](plugins/podman-sandbox/README.md) | plugin, launcher | Starts every Pi-Bolt process in a rootless [Podman](https://podman.io) container of an image built for the project, with its dependencies and tools (Linux): the run sees its worktree and a few read-only paths, and by default reaches the internet too (the mode `moebius` limits it to Moebius's ports on the host's loopback). |
 
 ## The index
 
