@@ -1,5 +1,6 @@
 //! The checks made once when the plugin starts: the platform is Linux, Podman is there, rootless, recent enough and
-//! has pasta, and every image the settings name is in its storage. A plugin that fails them exits with the sentence,
+//! has pasta, and every image the settings name is in its storage. Settings may name no image, since each repository can
+//! bring its own Dockerfile; a run that ends up with none is refused at its launch. A plugin that fails them exits with the sentence,
 //! so the core marks it not running and every launch is refused: a run never starts outside a container because
 //! the container cannot be made.
 
@@ -41,11 +42,6 @@ pub enum CheckError {
     )]
     NoPasta,
     #[error(
-        "no image is set, so no run could start: set --image, or --repo-image <repository>=<image> for each \
-         repository"
-    )]
-    NoImage,
-    #[error(
         "the image {0:?} is not in Podman's storage; the plugin never pulls one. Build or pull it (`podman pull`), \
          then restart the server"
     )]
@@ -58,9 +54,6 @@ pub fn check(settings: &Settings, os: &str) -> Result<(), CheckError> {
         return Err(CheckError::Platform(os.to_string()));
     }
     let images = settings.images();
-    if images.is_empty() {
-        return Err(CheckError::NoImage);
-    }
     let output = podman(settings, &["info", "--format", "json"])?;
     let info: Value = output
         .success
@@ -165,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn other_platforms_and_no_image_are_refused_before_podman_is_run() {
+    fn other_platforms_are_refused_before_podman_is_run() {
         let settings = Settings {
             podman: "/does/not/exist".into(),
             image: Some("base".into()),
@@ -175,10 +168,15 @@ mod tests {
             check(&settings, "macos"),
             Err(CheckError::Platform("macos".into()))
         );
-        assert_eq!(
-            check(&Settings::default(), "linux"),
-            Err(CheckError::NoImage)
-        );
+        // No image is fine: the repositories may bring Dockerfiles. Podman is still checked.
+        let imageless = Settings {
+            image: None,
+            ..settings.clone()
+        };
+        assert!(matches!(
+            check(&imageless, "linux"),
+            Err(CheckError::NotFound { .. })
+        ));
         let error = check(&settings, "linux").unwrap_err();
         assert!(matches!(error, CheckError::NotFound { .. }));
         assert!(error.to_string().contains("--podman"));

@@ -105,10 +105,15 @@ mod linux {
         ]);
 
         let manifest = plugin.line();
-        assert_eq!(
-            manifest,
-            json!({"type": "manifest", "manifest": {"name": "podman-sandbox", "version": env!("CARGO_PKG_VERSION"), "kinds": ["launcher"]}})
-        );
+        assert_eq!(manifest["type"], "manifest");
+        assert_eq!(manifest["manifest"]["name"], "podman-sandbox");
+        assert_eq!(manifest["manifest"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(manifest["manifest"]["kinds"], json!(["launcher"]));
+        // Each repository is asked for the Dockerfile of its image, in a code editor.
+        let setting = &manifest["manifest"]["project_settings"][0];
+        assert_eq!(setting["key"], "dockerfile");
+        assert_eq!(setting["input"], "code");
+        assert_eq!(setting["language"], "dockerfile");
 
         let reply = plugin.call(1, "launch", launch_params(&root, "Coder", Value::Null));
         assert_eq!(reply["type"], "reply", "{reply}");
@@ -174,6 +179,26 @@ mod linux {
             assert_eq!(reply["result"]["answer"], "unchanged", "{reply}");
             assert!(reply["result"]["note"].is_string());
         }
+
+        // A repository's Dockerfile: the wrapped launch builds its image from a directory that holds it alone,
+        // which the core removes after the run.
+        let mut params = launch_params(&root, "Coder", Value::Null);
+        params["repository"] = json!("shop");
+        params["project_settings"] = json!({"dockerfile": "FROM debian\n"});
+        let reply = plugin.call(6, "launch", params);
+        let args = strings(&reply["result"]["args"]);
+        let at = args.iter().position(|a| a == "--build").expect("a build");
+        assert!(args[at + 1].starts_with("localhost/moebius-podman-sandbox:"));
+        // The image is the one built and the one run.
+        assert_eq!(args.iter().filter(|a| **a == args[at + 1]).count(), 2);
+        let context = Path::new(&args[at + 2]);
+        assert_eq!(
+            std::fs::read_to_string(context.join("Dockerfile")).unwrap(),
+            "FROM debian\n"
+        );
+        assert_eq!(std::fs::read_dir(context).unwrap().count(), 1);
+        assert_eq!(reply["result"]["remove"], json!([args[at + 2]]));
+        std::fs::remove_dir_all(context).unwrap();
 
         let reply = plugin.call(4, "leftovers", json!({"running": []}));
         assert_eq!(reply["result"], json!({"cleanup": [], "remove": []}));

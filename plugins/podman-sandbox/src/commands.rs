@@ -1,8 +1,11 @@
 //! The subcommands of this program that a wrapped launch uses. The core starts them itself, whether or not the plugin
 //! is still running, so they are this program rather than a shell line:
 //!
-//! - `podman-sandbox run --podman <podman> --pass <names> -- <podman arguments>` is the wrapped program. It starts
-//!   Podman with its own environment but for the variables named in `<names>`, writes those to Podman's standard
+//! - `podman-sandbox run --podman <podman> --pass <names> [--build <image> <directory>] -- <podman arguments>` is the
+//!   wrapped program. With `--build`, when Podman has no `<image>` it first builds it from `<directory>/Dockerfile`
+//!   with that directory as the context, its output on the standard error (the run's log), and fails when the build
+//!   fails. Then it starts Podman with its own environment but for the variables named in `<names>`, writes those to
+//!   Podman's standard
 //!   input as `NAME=value` lines and an empty line (the container's [`ENV_SCRIPT`](crate::container::ENV_SCRIPT)
 //!   reads them), then copies its standard input to Podman's until it ends. The standard output goes straight
 //!   through. So the run token reaches the container without being in Podman's arguments, its environment or its
@@ -17,18 +20,31 @@ use std::process::{Command, Stdio};
 
 use moebius_plugin_api::CommandLine;
 
-use crate::container::{NAME_PREFIX, env_lines};
+use crate::container::{NAME_PREFIX, PLUGIN_LABEL, env_lines};
 
-/// The wrapped program's arguments, which start `podman <args>` with the variables `pass` given to the container.
-pub fn run_args(podman: &str, pass: &[String], args: Vec<String>) -> Vec<String> {
+/// The wrapped program's arguments, which start `podman <args>` with the variables `pass` given to the container,
+/// after building the image `build` names from its directory when Podman does not have it.
+pub fn run_args(
+    podman: &str,
+    pass: &[String],
+    build: Option<(&str, &Path)>,
+    args: Vec<String>,
+) -> Vec<String> {
     let mut all = vec![
         "run".to_string(),
         "--podman".into(),
         podman.into(),
         "--pass".into(),
         pass.join(","),
-        "--".into(),
     ];
+    if let Some((image, dir)) = build {
+        all.extend([
+            "--build".into(),
+            image.into(),
+            dir.to_string_lossy().into_owned(),
+        ]);
+    }
+    all.push("--".into());
     all.extend(args);
     all
 }
@@ -72,11 +88,20 @@ pub struct Outcome {
 /// Runs the subcommand in `args` (the arguments after the program's name); `None` when `args` is no subcommand.
 pub fn run(args: &[String]) -> Option<Outcome> {
     match args {
-        [cmd, flag, podman, pass_flag, pass, dashes, rest @ ..]
-            if cmd == "run" && flag == "--podman" && pass_flag == "--pass" && dashes == "--" =>
+        [cmd, flag, podman, pass_flag, pass, after @ ..]
+            if cmd == "run" && flag == "--podman" && pass_flag == "--pass" =>
         {
+            let (build, rest) = match after {
+                [dashes, rest @ ..] if dashes == "--" => (None, rest),
+                [build_flag, image, dir, dashes, rest @ ..]
+                    if build_flag == "--build" && dashes == "--" =>
+                {
+                    (Some((image.as_str(), Path::new(dir))), rest)
+                }
+                _ => return None,
+            };
             let names: Vec<&str> = pass.split(',').filter(|n| !n.is_empty()).collect();
-            Some(run_container(podman, &names, rest))
+            Some(run_container(podman, &names, build, rest))
         }
         [cmd, podman, name] if cmd == "stop" => Some(Outcome {
             code: 0,
@@ -86,16 +111,28 @@ pub fn run(args: &[String]) -> Option<Outcome> {
     }
 }
 
-/// Starts Podman, gives the container its environment, relays the standard input, and exits as Podman did.
-fn run_container(podman: &str, names: &[&str], args: &[String]) -> Outcome {
+/// Builds the image when asked and Podman lacks it, starts Podman, gives the container its environment, relays the
+/// standard input, and exits as Podman did.
+fn run_container(
+    podman: &str,
+    names: &[&str],
+    build: Option<(&str, &Path)>,
+    args: &[String],
+) -> Outcome {
     let env: BTreeMap<String, String> = std::env::vars().collect();
     let lines = match env_lines(&env, names.iter().copied()) {
         Ok(lines) => lines,
         Err(e) => return failed(e.to_string()),
     };
-    let podman_env = env
+    let podman_env: BTreeMap<&String, &String> = env
         .iter()
-        .filter(|(name, _)| !names.contains(&name.as_str()));
+        .filter(|(name, _)| !names.contains(&name.as_str()))
+        .collect();
+    if let Some((image, dir)) = build
+        && let Err(why) = ensure_image(podman, &podman_env, image, dir)
+    {
+        return failed(why);
+    }
     let child = Command::new(podman)
         .args(args)
         .env_clear()
@@ -121,6 +158,49 @@ fn run_container(podman: &str, names: &[&str], args: &[String]) -> Outcome {
             said: String::new(),
         },
         Err(e) => failed(format!("cannot wait for {podman}: {e}")),
+    }
+}
+
+/// Builds `image` from `dir`, the directory of the repository's Dockerfile, unless Podman has it already. The build's
+/// output goes to the standard error, since the standard output is the harness's protocol.
+fn ensure_image(
+    podman: &str,
+    env: &BTreeMap<&String, &String>,
+    image: &str,
+    dir: &Path,
+) -> Result<(), String> {
+    let podman_command = || {
+        let mut command = Command::new(podman);
+        command.env_clear().envs(env.iter().map(|(k, v)| (*k, *v)));
+        command
+    };
+    let exists = podman_command()
+        .args(["image", "exists", image])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("cannot run {podman}: {e}"))?;
+    if exists.success() {
+        return Ok(());
+    }
+    eprintln!("podman-sandbox: building {image} from the repository's Dockerfile");
+    let status = podman_command()
+        .arg("build")
+        .args(["--tag", image, "--label"])
+        .arg(format!("{PLUGIN_LABEL}={}", crate::NAME))
+        .arg("--file")
+        .arg(dir.join("Dockerfile"))
+        .arg(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|e| format!("cannot run {podman}: {e}"))?;
+    match status.success() {
+        true => Ok(()),
+        false => Err(format!(
+            "cannot build the image of the repository's Dockerfile: podman build failed ({status}); its output is above"
+        )),
     }
 }
 
@@ -183,6 +263,7 @@ mod tests {
         let args = run_args(
             "/usr/bin/podman",
             &["MOEBIUS_RUN_TOKEN".into(), "LANG".into()],
+            None,
             vec!["run".into(), "--rm".into()],
         );
         assert_eq!(
@@ -196,6 +277,105 @@ mod tests {
                 "--",
                 "run",
                 "--rm"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_build_is_named_before_the_podman_arguments() {
+        let args = run_args(
+            "podman",
+            &[],
+            Some((
+                "localhost/moebius-podman-sandbox:ab",
+                Path::new("/tmp/n-build"),
+            )),
+            vec!["run".into()],
+        );
+        assert_eq!(
+            args,
+            [
+                "run",
+                "--podman",
+                "podman",
+                "--pass",
+                "",
+                "--build",
+                "localhost/moebius-podman-sandbox:ab",
+                "/tmp/n-build",
+                "--",
+                "run"
+            ]
+        );
+    }
+
+    #[cfg(unix)] // The fake Podman is a shell script.
+    #[test]
+    fn run_builds_a_missing_image_once_and_fails_without_starting_the_container_when_the_build_fails()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let podman = dir.path().join("podman");
+        // `image exists` answers from a marker file, which a build that succeeds makes; `build` fails when the
+        // Dockerfile says so.
+        let text = format!(
+            "#!/bin/sh\necho \"$@\" >> {log}\ncase \"$1\" in\n  image) [ -e {made} ] ;;\n  build) grep -q fail \"$7\" && exit 3; touch {made} ;;\n  *) exit 0 ;;\nesac\n",
+            log = log.display(),
+            made = dir.path().join("made").display(),
+        );
+        crate::testing::script(&podman, &text);
+        let context = dir.path().join("n-build");
+        std::fs::create_dir(&context).unwrap();
+        let start = |dockerfile: &str| {
+            std::fs::write(context.join("Dockerfile"), dockerfile).unwrap();
+            std::fs::write(&log, "").unwrap();
+            let args = run_args(
+                &podman.to_string_lossy(),
+                &[],
+                Some(("localhost/moebius-podman-sandbox:ab", &context)),
+                vec!["run".into(), "--rm".into()],
+            );
+            let outcome = run(&args).unwrap();
+            let calls: Vec<String> = std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .map(String::from)
+                .collect();
+            (outcome, calls)
+        };
+
+        let (outcome, calls) = start("FROM fail\n");
+        assert_eq!(outcome.code, 1);
+        assert!(outcome.said.contains("cannot build"), "{outcome:?}");
+        assert_eq!(
+            calls.len(),
+            2,
+            "no container after a failed build: {calls:?}"
+        );
+
+        let (outcome, calls) = start("FROM debian\n");
+        assert_eq!(outcome.code, 0, "{outcome:?}");
+        let file = context.join("Dockerfile");
+        assert_eq!(
+            calls,
+            [
+                "image exists localhost/moebius-podman-sandbox:ab".to_string(),
+                format!(
+                    "build --tag localhost/moebius-podman-sandbox:ab --label moebius.plugin=podman-sandbox --file {} {}",
+                    file.display(),
+                    context.display()
+                ),
+                "run --rm".to_string(),
+            ]
+        );
+
+        // Built once, it is not built again.
+        let (_, calls) = start("FROM debian\n");
+        assert_eq!(
+            calls,
+            [
+                "image exists localhost/moebius-podman-sandbox:ab",
+                "run --rm"
             ]
         );
     }

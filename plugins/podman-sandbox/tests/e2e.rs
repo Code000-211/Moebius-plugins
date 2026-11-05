@@ -157,6 +157,9 @@ impl World {
             },
             clone: Some(self.at("data/repos/shop")),
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 }

@@ -21,6 +21,11 @@
 //! Every host path is mounted with `z`, which labels it for containers on a host with SELinux (Fedora's Podman
 //! refuses a mount otherwise) and does nothing elsewhere.
 //!
+//! The image is the repository's own when a person gave it a Dockerfile on its page in Moebius (the project setting
+//! [`DOCKERFILE`]): it is named by the Dockerfile's hash ([`built_image`]), so a changed Dockerfile is a new image,
+//! and `podman-sandbox run` builds it before the container starts when Podman does not have it yet. Without one, it is
+//! the `--repo-image` of the repository, else `--image`.
+//!
 //! The directory of the harness's installation comes from the environment, not from the request, so one that
 //! contains the worktree, the clone or another path the run writes fails the launch: it would make the data
 //! directory, its secrets and the other worktrees readable too.
@@ -41,6 +46,29 @@ pub const RUN_LABEL: &str = "moebius.run";
 
 /// The prefix of a container's name.
 pub const NAME_PREFIX: &str = "moebius-run-";
+
+/// The key of the project setting that holds a repository's Dockerfile.
+pub const DOCKERFILE: &str = "dockerfile";
+
+/// The repository of the images built from Dockerfiles; the tag is the Dockerfile's hash.
+pub const BUILT_IMAGE: &str = "localhost/moebius-podman-sandbox";
+
+/// The image a run uses, and the Dockerfile to build it from when Podman does not have it yet; none for an image of
+/// the settings, which the checks at start found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub name: String,
+    pub dockerfile: Option<String>,
+}
+
+/// The name of the image built from `dockerfile`: the first 16 bytes of its SHA-256 in hexadecimal as the tag, so the
+/// same text is built once and a changed one is built anew.
+pub fn built_image(dockerfile: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(dockerfile.as_bytes());
+    let tag: String = hash[..16].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{BUILT_IMAGE}:{tag}")
+}
 
 /// What the container starts with `/bin/sh -c`: it reads `NAME=value` lines from the standard input up to an empty
 /// one, exports each (`export "$line"` assigns, it never evaluates the value), then becomes the harness, which reads
@@ -64,8 +92,8 @@ pub enum ContainerError {
     )]
     NotLoopback(String),
     #[error(
-        "there is no image for {0}: set --image, or --repo-image <repository>=<image> for its repository, or \
-         exclude the agent"
+        "there is no image for {0}: give the repository a Dockerfile on its page in Moebius, set --image, or \
+         --repo-image <repository>=<image> for its repository, or exclude the agent"
     )]
     NoImage(String),
     #[error(
@@ -151,13 +179,44 @@ pub fn env_lines<'a>(
     Ok(text)
 }
 
-/// The repository of the run: the name of its clone's directory, which is the repository's name in Moebius
-/// (`<data_dir>/repos/<name>`). `None` for a chat without a repository.
+/// The repository of the run, by its name in Moebius: the request's, or, from a Moebius that does not send it, the
+/// name of its clone's directory (`<data_dir>/repos/<name>`). `None` for a chat without a repository.
 pub fn repository(request: &LaunchRequest) -> Option<String> {
+    if let Some(name) = &request.repository {
+        return Some(name.clone());
+    }
     let clone = request.clone.as_deref()?;
     Path::new(clone)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// The image of the run: built from the repository's Dockerfile when it has one, else the settings' image for it.
+pub fn image(request: &LaunchRequest, settings: &Settings) -> Result<Image, ContainerError> {
+    if let Some(dockerfile) = request
+        .project_settings
+        .get(DOCKERFILE)
+        .filter(|text| !text.trim().is_empty())
+    {
+        return Ok(Image {
+            name: built_image(dockerfile),
+            dockerfile: Some(dockerfile.clone()),
+        });
+    }
+    let repository = repository(request);
+    let name = settings.image_for(repository.as_deref()).ok_or_else(|| {
+        ContainerError::NoImage(match &repository {
+            Some(repo) => format!("the repository {repo}"),
+            None => format!(
+                "the agent {}'s chat without a repository",
+                request.run.agent
+            ),
+        })
+    })?;
+    Ok(Image {
+        name: name.to_string(),
+        dockerfile: None,
+    })
 }
 
 /// The ports of the three addresses, which must be on the loopback, sorted and without repeats.
@@ -294,20 +353,8 @@ pub fn build(
     settings: &Settings,
     mode: Network,
     name: &str,
-) -> Result<(Vec<String>, String), ContainerError> {
-    let repository = repository(request);
-    let image = settings
-        .image_for(repository.as_deref())
-        .ok_or_else(|| {
-            ContainerError::NoImage(match &repository {
-                Some(repo) => format!("the repository {repo}"),
-                None => format!(
-                    "the agent {}'s chat without a repository",
-                    request.run.agent
-                ),
-            })
-        })?
-        .to_string();
+) -> Result<(Vec<String>, Image), ContainerError> {
+    let image = image(request, settings)?;
     let ports = loopback_ports(&request.urls)?;
 
     let path_var = request.env.get("PATH").map(String::as_str);
@@ -400,7 +447,7 @@ pub fn build(
     args.extend([
         "--workdir".to_string(),
         mountable(Path::new(&request.dir))?,
-        image.clone(),
+        image.name.clone(),
         "/bin/sh".into(),
         "-c".into(),
         ENV_SCRIPT.into(),
@@ -473,6 +520,9 @@ mod tests {
             },
             clone: Some(at("data/repos/shop")),
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 
@@ -496,7 +546,7 @@ mod tests {
         let request = request(&world);
         let (args, image) =
             build(&request, &settings(), Network::Moebius, "moebius-run-7-a").unwrap();
-        assert_eq!(image, "localhost/base");
+        assert_eq!(image.name, "localhost/base");
         let at = |p: &str| world.root.join(p).to_string_lossy().into_owned();
         let volumes = after(&args, "--volume");
         for (path, options) in [
@@ -630,12 +680,13 @@ mod tests {
             .repo_images
             .insert("shop".into(), "localhost/shop".into());
         let (_, image) = build(&request(&world), &settings, Network::Moebius, "n").unwrap();
-        assert_eq!(image, "localhost/shop");
+        assert_eq!(image.name, "localhost/shop");
+        assert_eq!(image.dockerfile, None);
 
         let mut chat = request(&world);
         chat.clone = None;
         let (_, image) = build(&chat, &settings, Network::Moebius, "n").unwrap();
-        assert_eq!(image, "localhost/base");
+        assert_eq!(image.name, "localhost/base");
 
         settings.image = None;
         let error = build(&chat, &settings, Network::Moebius, "n").unwrap_err();
@@ -647,6 +698,51 @@ mod tests {
         other.clone = Some(world.root.join("data/repos/other").to_string_lossy().into());
         let error = build(&other, &settings, Network::Moebius, "n").unwrap_err();
         assert!(error.to_string().contains("repository other"), "{error}");
+    }
+
+    #[test]
+    fn a_repositorys_dockerfile_names_its_own_image_by_its_hash_before_any_setting() {
+        let world = world();
+        let mut settings = settings();
+        settings
+            .repo_images
+            .insert("shop".into(), "localhost/shop".into());
+        let mut request = request(&world);
+        request.repository = Some("shop".into());
+        request
+            .project_settings
+            .insert(DOCKERFILE.into(), "FROM debian\n".into());
+        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert!(image.name.starts_with("localhost/moebius-podman-sandbox:"));
+        assert_eq!(image.name.len(), BUILT_IMAGE.len() + 1 + 32);
+        assert_eq!(image.dockerfile.as_deref(), Some("FROM debian\n"));
+        assert!(args.contains(&image.name));
+
+        // The same text is the same image; another text another one.
+        assert_eq!(built_image("FROM debian\n"), image.name);
+        assert_ne!(built_image("FROM debian:12\n"), image.name);
+
+        // A blank Dockerfile is none: the settings' image is used.
+        request
+            .project_settings
+            .insert(DOCKERFILE.into(), " \n".into());
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, "localhost/shop");
+        assert_eq!(image.dockerfile, None);
+    }
+
+    #[test]
+    fn the_repository_is_the_one_the_request_names_before_the_clone_directory() {
+        let world = world();
+        let mut settings = settings();
+        settings
+            .repo_images
+            .insert("renamed".into(), "localhost/renamed".into());
+        let mut request = request(&world);
+        assert_eq!(repository(&request).as_deref(), Some("shop"));
+        request.repository = Some("renamed".into());
+        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        assert_eq!(image.name, "localhost/renamed");
     }
 
     #[test]

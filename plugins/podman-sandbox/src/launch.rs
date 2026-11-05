@@ -12,13 +12,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use moebius_plugin_api::{
     Call, Kind, LaunchAnswer, LaunchRequest, Leftovers, LeftoversRequest, Manifest, Plugin,
-    PluginError, Wrapped,
+    PluginError, PluginSetting, SettingInput, Wrapped,
 };
 use serde_json::Value;
 
 use crate::NAME;
 use crate::commands::{is_container_name, run_args, stop_command};
-use crate::container::{NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, build, env_lines, passed_env};
+use crate::container::{
+    DOCKERFILE, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, build, env_lines, passed_env,
+};
 use crate::settings::{Network, Settings};
 
 /// The variables of the plugin's own environment that Podman reads to find its storage, its configuration and its
@@ -81,6 +83,12 @@ impl PodmanSandbox {
         let mode = self.settings.network_for(&request.run.agent);
         let name = container_name(request.run.id);
         let (args, image) = build(&request, &self.settings, mode, &name).map_err(failed)?;
+        // A repository's Dockerfile is built by the wrapped launch, which has no time limit, from a directory that
+        // holds it alone; the core removes the directory once the run has ended.
+        let context = match &image.dockerfile {
+            Some(dockerfile) => Some(build_context(&name, dockerfile)?),
+            None => None,
+        };
 
         let passed = passed_env(&request.env);
         // A variable that could not reach the container fails the launch here, with its name, not in the container.
@@ -97,7 +105,12 @@ impl PodmanSandbox {
         };
         Ok(LaunchAnswer::Wrapped(Box::new(Wrapped {
             program: self.exe.to_string_lossy().into_owned(),
-            args: run_args(&self.settings.podman, &pass, args),
+            args: run_args(
+                &self.settings.podman,
+                &pass,
+                context.as_deref().map(|dir| (image.name.as_str(), dir)),
+                args,
+            ),
             env,
             urls: Default::default(),
             stop: Some(stop_command(
@@ -107,9 +120,17 @@ impl PodmanSandbox {
                 &self.podman_env,
             )),
             cleanup: None,
-            remove: Vec::new(),
+            remove: context
+                .iter()
+                .map(|dir| dir.to_string_lossy().into_owned())
+                .collect(),
             note: Some(format!(
-                "in the Podman container {name} of the image {image}, which reaches {reach}"
+                "in the Podman container {name} of the image {}{}, which reaches {reach}",
+                image.name,
+                match image.dockerfile {
+                    Some(_) => " (the repository's Dockerfile)",
+                    None => "",
+                },
             )),
         })))
     }
@@ -170,6 +191,21 @@ impl PodmanSandbox {
     }
 }
 
+/// Writes `dockerfile` alone into a new directory for the container `name`, the build context of its image: nothing of
+/// the host is in it, so a `COPY` finds nothing to copy.
+fn build_context(name: &str, dockerfile: &str) -> Result<PathBuf, PluginError> {
+    let dir = std::env::temp_dir().join(format!("{name}-build"));
+    std::fs::create_dir(&dir)
+        .and_then(|()| std::fs::write(dir.join("Dockerfile"), dockerfile))
+        .map_err(|e| {
+            PluginError::Failed(format!(
+                "cannot write the repository's Dockerfile to {}: {e}",
+                dir.display()
+            ))
+        })?;
+    Ok(dir)
+}
+
 fn unchanged(note: impl Into<String>) -> LaunchAnswer {
     LaunchAnswer::Unchanged {
         note: Some(note.into()),
@@ -198,6 +234,17 @@ impl Plugin for PodmanSandbox {
             name: NAME.into(),
             version: env!("CARGO_PKG_VERSION").into(),
             kinds: vec![Kind::Launcher],
+            project_settings: vec![PluginSetting {
+                key: DOCKERFILE.into(),
+                label: "Dockerfile".into(),
+                description: "The image of this repository's runs: the plugin builds it with Podman before the \
+                              first run that needs it, from an empty build context, and builds it again when it \
+                              changes. Left empty, the runs use --repo-image or --image."
+                    .into(),
+                input: SettingInput::Code,
+                language: Some("dockerfile".into()),
+            }],
+            app_settings: Vec::new(),
         }
     }
 
@@ -273,6 +320,9 @@ mod tests {
             },
             clone: None,
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 

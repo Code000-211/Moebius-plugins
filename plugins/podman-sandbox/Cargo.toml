@@ -15,9 +15,11 @@ name = "podman-sandbox"
 path = "src/main.rs"
 
 [dependencies]
-moebius-plugin-api = { git = "https://github.com/Code000-211/moebius", rev = "36409f4a195b69e98adf73099d9f27f9adb83fd2" }
+# Until the Moebius change that adds project settings is pushed: then this goes back to `git` and its full `rev`.
+moebius-plugin-api = { path = "../../../Moebius/crates/moebius-plugin-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 
 [dev-dependencies]
