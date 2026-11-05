@@ -157,6 +157,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "moebius-plugin-podman-sandbox"
+version = "0.1.0"
+dependencies = [
+ "moebius-plugin-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "moebius-plugins-index"
 version = "0.1.0"
 dependencies = [

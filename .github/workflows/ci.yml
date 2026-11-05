@@ -66,3 +66,23 @@ jobs:
           "$HOME/.local/bin/nono" setup --check-only | tee setup.txt
           grep -q "TCP network rule support verified" setup.txt
       - run: cargo test -p moebius-plugin-nono-sandbox --test e2e -- --nocapture
+
+  e2e-podman:
+    name: end to end with rootless Podman
+    runs-on: ubuntu-latest
+    env:
+      MOEBIUS_E2E_PODMAN: "1"
+      MOEBIUS_E2E_PODMAN_IMAGE: docker.io/library/debian:stable-slim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pasta and pull the image
+        run: |
+          # The runner has Podman; pasta, which makes the containers' network, is the package passt.
+          sudo apt-get update
+          sudo apt-get install -y passt
+          podman --version
+          podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
+          podman pull "$MOEBIUS_E2E_PODMAN_IMAGE"
+      - run: cargo test -p moebius-plugin-podman-sandbox --test e2e -- --nocapture
