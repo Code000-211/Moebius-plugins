@@ -42,4 +42,4 @@ path of the program), on Linux. CI installs the pinned nono and sets it.
 ## Commits
 
 One commit per change, imperative subject, a body that says what and why, then `Refs Code000-211/Moebius#<n>` or
-`Closes ...` and the session's attribution trailers.
+`Closes ...`.
