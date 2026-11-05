@@ -14,10 +14,10 @@ answers with `nono --silent run --profile <file> --name <session> --no-audit --n
 | | |
 |---|---|
 | Read and write | The run's worktree, its agent directory (where Pi-Bolt keeps its credential store), its sessions directory and its temporary directory (the request's `read_write` and `dir`), and the devices `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/tty` with `/dev/fd` and `/proc/self/fd`. |
-| Read only | The extensions (the request's `read_only`); the clone whose git directory the worktree uses; the directory of the Pi-Bolt installation (an npm package whole); every existing absolute directory on the run's `PATH` (the toolchains; relative and empty entries are left out); rustup's home and cargo's `registry` and `git` directories when a toolchain of either is on the `PATH` (not the rest of cargo's home, which holds the registry token); the setting `--read-only`; and, on Linux, nono's `system_read_linux_core` group, which every program needs to start. |
+| Read only | The extensions (the request's `read_only`); the clone whose git directory the worktree uses; the directory of the Pi-Bolt installation (an npm package whole); every existing absolute directory on the run's `PATH` (the toolchains; relative and empty entries are left out); rustup's home and cargo's `registry` and `git` directories when a toolchain of either is on the `PATH` (not the rest of cargo's home, which holds the registry token); the program `MOEBIUS` names, when a run has it (the `moebius` binary the Moebius agent drives the server with); the setting `--read-only`; and, on Linux, nono's `system_read_linux_core` group, which every program needs to start. |
 | Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, and not `/tmp`. nono adds base groups to every profile whether the profile names them or not; the profile excludes `system_write_linux`, `system_write_macos` (write access to `/tmp`), `user_tools`, `homebrew_linux` and `homebrew_macos`, and on macOS `system_read_macos` (it reads `/opt`, `/var`, `/private`, `/etc`, `/Library`), with a short list of system directories in its place. |
 | Unix sockets | `linux.af_unix_mediation` is `pathname` and no socket is granted, so a run cannot connect to the user's D-Bus (`systemd-run --user`), Docker or ssh-agent sockets. Without it nono lets a run connect to any pathname socket. With `--unix-sockets allow` the key is left out, only where mediation cannot work (WSL2, see below): Landlock does not gate `connect()` to pathname sockets, so a run can then reach every socket its user may connect to, and through the Docker socket (root on the host), the user D-Bus (`systemd-run --user`), the ssh-agent or, on WSL2 with interop on, the Windows interop socket under `/run/WSL` it can act as the user outside the sandbox. The launch note says so. |
-| Network, mode `moebius` (default) | All outbound access is blocked except TCP to the ports of the router, the gateway and the tool-call check, which must be on the loopback and 1024 or more (`network.block` with `network.connect_port` on Linux, `network.open_port` on macOS). See the limit below. |
+| Network, mode `moebius` (default) | All outbound access is blocked except TCP to the ports of the router, the gateway and the tool-call check and, for a run that operates the server (its environment has `MOEBIUS_URL`, as the Moebius agent's does), of the desktop API, which must be on the loopback and 1024 or more (`network.block` with `network.connect_port` on Linux, `network.open_port` on macOS). See the limit below. |
 | Network, mode `internet` | Outbound access is not restricted. |
 | Environment | `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lower-case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `CARGO_HOME`, `RUSTUP_HOME`, `PI_CODING_AGENT_DIR`, `MOEBIUS` and `MOEBIUS_*`. Nothing else: no provider keys. The profile lists the same names in `environment.allow_vars`. |
 
@@ -70,6 +70,30 @@ args = [
 ]
 launches = true
 ```
+
+### Sandboxing only the Moebius agent, next to another launcher
+
+Moebius can have several launchers, each for the agents of its `launch_agents`; a run goes to the first that takes its
+agent. This sandboxes the Moebius agent with nono, whose profile lets it reach the desktop API, and leaves every other
+agent to another launcher, such as `podman-sandbox`:
+
+```toml
+[[plugins]]
+name = "nono-sandbox"
+path = "/opt/moebius/plugins/nono-sandbox"
+launches = true
+launch_agents = ["Moebius"]
+
+[[plugins]]
+name = "podman-sandbox"
+path = "/opt/moebius/plugins/podman-sandbox"
+args = ["--exclude-agent", "Moebius"]
+launches = true
+```
+
+The Moebius agent still writes only its worktree, its agent and sessions directories and its temporary directory, and
+reads what a run reads. It can run `"$MOEBIUS"` because the desktop API's port and the program are granted, and nothing
+else of the server or of the user's files is. It needs a Moebius that supports `launch_agents`.
 
 ## Platforms and checks at start
 
