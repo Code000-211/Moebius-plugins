@@ -60,7 +60,18 @@ Stop and cleanup:
 ## The Dockerfiles
 
 The plugin asks for two Dockerfiles, both in the web app in a box named `podman-sandbox`, and a person writes them there
-and saves them; the next run uses them.
+and saves them; the next run uses them. The box is the plugin's own page: above each Dockerfile, "Start from" offers
+presets that replace its text, to edit before saving.
+
+| Preset | What it is | Offered for |
+|---|---|---|
+| The server's base | `ARG MOEBIUS_BASE` and `FROM ${MOEBIUS_BASE}`, to add what the project needs | a repository |
+| Debian | `node:24-bookworm-slim` with `git` | both |
+| Ubuntu | Ubuntu 24.04 with `git`, and Node 24 copied from its official image | both |
+| Fedora | Fedora 44 with `git`, and Node 24 copied from its official image | both |
+| Playwright | `node:24-bookworm` with Chromium and its system libraries in `/ms-playwright` | both |
+
+The presets are the files of [`page/presets/`](page/presets/); the page is [`page/settings.js`](page/settings.js).
 
 - **The base Dockerfile** is the app setting `base_dockerfile`, on the Settings page. It is what the whole server shares:
   what the harness needs in a container (a glibc-based system with `/bin/sh`, `node` if Pi-Bolt is a node package, `git`)

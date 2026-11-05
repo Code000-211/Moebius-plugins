@@ -265,6 +265,7 @@ impl Plugin for PodmanSandbox {
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
             }],
+            settings_ui: Some(crate::page::source()),
         }
     }
 
@@ -534,9 +535,13 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_is_a_launcher_and_other_methods_are_refused() {
+    fn the_manifest_is_a_launcher_with_its_page_and_other_methods_are_refused() {
         let plugin = plugin(|_| {});
         let manifest = plugin.manifest();
+        assert_eq!(
+            manifest.settings_ui.as_deref(),
+            Some(crate::page::source().as_str())
+        );
         assert_eq!(
             (manifest.name.as_str(), manifest.kinds),
             (NAME, vec![Kind::Launcher])
