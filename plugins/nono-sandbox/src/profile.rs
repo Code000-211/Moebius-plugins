@@ -572,6 +572,9 @@ mod tests {
             },
             clone: Some("/data/repos/demo".into()),
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 

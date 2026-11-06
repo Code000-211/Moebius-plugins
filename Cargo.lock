@@ -137,17 +137,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "moebius-plugin-api"
-version = "0.1.9"
-source = "git+https://github.com/Code000-211/moebius?rev=36409f4a195b69e98adf73099d9f27f9adb83fd2#36409f4a195b69e98adf73099d9f27f9adb83fd2"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "moebius-plugin-api"
-version = "0.6.0"
+version = "0.7.0"
+source = "git+https://github.com/Code000-211/moebius?rev=5dac1dd2c7e4cd5537a4cb3fef429310b1cbfffa#5dac1dd2c7e4cd5537a4cb3fef429310b1cbfffa"
 dependencies = [
  "serde",
  "serde_json",
@@ -158,7 +149,7 @@ dependencies = [
 name = "moebius-plugin-nono-sandbox"
 version = "0.2.0"
 dependencies = [
- "moebius-plugin-api 0.1.9",
+ "moebius-plugin-api",
  "serde",
  "serde_json",
  "tempfile",
@@ -169,7 +160,7 @@ dependencies = [
 name = "moebius-plugin-podman-sandbox"
 version = "0.1.0"
 dependencies = [
- "moebius-plugin-api 0.6.0",
+ "moebius-plugin-api",
  "serde",
  "serde_json",
  "sha2",

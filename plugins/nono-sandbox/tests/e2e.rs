@@ -174,6 +174,9 @@ fn launch(
         },
         clone: None,
         runner: None,
+        repository: None,
+        project_settings: BTreeMap::new(),
+        app_settings: BTreeMap::new(),
     };
     let mut settings = Settings {
         nono: nono.to_string(),

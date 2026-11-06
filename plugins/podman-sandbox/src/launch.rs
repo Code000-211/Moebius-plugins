@@ -277,7 +277,7 @@ impl Plugin for PodmanSandbox {
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
             }],
-            settings_ui: Some(crate::page::source()),
+            settings_ui: Some(crate::page::source().into()),
         }
     }
 
