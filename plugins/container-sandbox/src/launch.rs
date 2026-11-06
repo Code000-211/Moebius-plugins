@@ -40,7 +40,7 @@ pub const PODMAN_ENV: [&str; 9] = [
 ];
 
 /// The Podman sandbox launcher.
-pub struct PodmanSandbox {
+pub struct ContainerSandbox {
     settings: Settings,
     /// This program, which the wrapped launch and the stop command start.
     exe: PathBuf,
@@ -48,7 +48,7 @@ pub struct PodmanSandbox {
     podman_env: BTreeMap<String, String>,
 }
 
-impl PodmanSandbox {
+impl ContainerSandbox {
     pub fn new(settings: Settings, exe: PathBuf, podman_env: BTreeMap<String, String>) -> Self {
         Self {
             settings,
@@ -234,7 +234,7 @@ fn container_name(run: i64) -> String {
     )
 }
 
-impl Plugin for PodmanSandbox {
+impl Plugin for ContainerSandbox {
     fn manifest(&self) -> Manifest {
         Manifest {
             name: NAME.into(),
@@ -359,19 +359,23 @@ mod tests {
         }
     }
 
-    fn plugin(edit: impl FnOnce(&mut Settings)) -> PodmanSandbox {
+    fn plugin(edit: impl FnOnce(&mut Settings)) -> ContainerSandbox {
         let mut settings = Settings {
             podman: "/usr/bin/podman".into(),
             image: Some("localhost/base".into()),
             ..Settings::default()
         };
         edit(&mut settings);
-        let env = PodmanSandbox::podman_env_of([
+        let env = ContainerSandbox::podman_env_of([
             ("PATH".to_string(), "/usr/bin".to_string()),
             ("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string()),
             ("SECRET_OF_THE_SERVER".to_string(), "x".to_string()),
         ]);
-        PodmanSandbox::new(settings, PathBuf::from("/opt/plugins/podman-sandbox"), env)
+        ContainerSandbox::new(
+            settings,
+            PathBuf::from("/opt/plugins/container-sandbox"),
+            env,
+        )
     }
 
     fn wrapped(answer: LaunchAnswer) -> Wrapped {
@@ -389,7 +393,7 @@ mod tests {
                 .launch(request(&world, "Coder"))
                 .unwrap(),
         );
-        assert_eq!(wrapped.program, "/opt/plugins/podman-sandbox");
+        assert_eq!(wrapped.program, "/opt/plugins/container-sandbox");
         assert_eq!(
             &wrapped.args[..7],
             [
@@ -432,7 +436,7 @@ mod tests {
         let plugin = plugin(|_| {});
         let wrapped = wrapped(plugin.launch(request(&world, "Coder")).unwrap());
         let stop = wrapped.stop.unwrap();
-        assert_eq!(stop.program, "/opt/plugins/podman-sandbox");
+        assert_eq!(stop.program, "/opt/plugins/container-sandbox");
         assert_eq!(&stop.args[..2], ["stop", "/usr/bin/podman"]);
         let at = wrapped.args.iter().position(|a| a == "--name").unwrap();
         assert_eq!(wrapped.args[at + 1], stop.args[2]);
@@ -502,7 +506,7 @@ mod tests {
     }
 
     /// A fake Podman whose `ps` prints `json`.
-    fn with_fake_ps(dir: &Path, json: &str, code: i32) -> PodmanSandbox {
+    fn with_fake_ps(dir: &Path, json: &str, code: i32) -> ContainerSandbox {
         let podman = dir.join("podman");
         crate::testing::script(
             &podman,
@@ -517,9 +521,9 @@ mod tests {
     fn leftovers_are_the_containers_of_runs_that_are_not_running() {
         let dir = tempfile::tempdir().unwrap();
         let json = serde_json::json!([
-            {"Names": ["moebius-run-3-aa"], "Labels": {"moebius.plugin": "podman-sandbox", "moebius.run": "3"}},
-            {"Names": ["moebius-run-4-bb"], "Labels": {"moebius.plugin": "podman-sandbox", "moebius.run": "4"}},
-            {"Names": ["someone-else"], "Labels": {"moebius.plugin": "podman-sandbox", "moebius.run": "5"}},
+            {"Names": ["moebius-run-3-aa"], "Labels": {"moebius.plugin": "container-sandbox", "moebius.run": "3"}},
+            {"Names": ["moebius-run-4-bb"], "Labels": {"moebius.plugin": "container-sandbox", "moebius.run": "4"}},
+            {"Names": ["someone-else"], "Labels": {"moebius.plugin": "container-sandbox", "moebius.run": "5"}},
         ]);
         let plugin = with_fake_ps(dir.path(), &json.to_string(), 0);
         let left = plugin

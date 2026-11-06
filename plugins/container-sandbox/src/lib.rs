@@ -1,7 +1,7 @@
 //! The Podman sandbox launcher: a Moebius plugin of the kind `launcher` that starts every Pi-Bolt process inside a
 //! rootless Podman container, from an image that holds the project's dependencies and tools.
 //!
-//! For each launch request the plugin answers with this program started as `podman-sandbox run`, which starts
+//! For each launch request the plugin answers with this program started as `container-sandbox run`, which starts
 //! `podman run` with the run's paths mounted at the same paths, Pi-Bolt's installation mounted read only, and a
 //! network that reaches only the router's ports on the host's loopback (or, in mode `internet`, those and the
 //! internet). The run's environment goes to the container over its standard input, never through Podman's arguments
@@ -23,7 +23,7 @@ pub mod page;
 pub mod settings;
 
 /// The name the plugin is known by; the `[[plugins]]` entry must use it too.
-pub const NAME: &str = "podman-sandbox";
+pub const NAME: &str = "container-sandbox";
 
 /// Helpers for the tests that run a fake Podman.
 #[cfg(all(test, unix))]

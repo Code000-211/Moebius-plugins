@@ -85,4 +85,4 @@ jobs:
           podman --version
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
           podman pull "$MOEBIUS_E2E_PODMAN_IMAGE"
-      - run: cargo test -p moebius-plugin-podman-sandbox --test e2e -- --nocapture
+      - run: cargo test -p moebius-plugin-container-sandbox --test e2e -- --nocapture

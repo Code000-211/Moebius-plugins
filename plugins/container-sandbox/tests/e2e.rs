@@ -18,11 +18,11 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use container_sandbox::launch::ContainerSandbox;
+use container_sandbox::settings::{Network, Settings};
 use moebius_plugin_api::{
     LaunchAnswer, LaunchRequest, LaunchRun, LeftoversRequest, Plugin, Urls, Wrapped,
 };
-use podman_sandbox::launch::PodmanSandbox;
-use podman_sandbox::settings::{Network, Settings};
 
 mod common;
 
@@ -36,7 +36,7 @@ fn podman() -> Option<String> {
     } else {
         value
     };
-    Some(podman_sandbox::check::resolve(&program).unwrap_or(program))
+    Some(container_sandbox::check::resolve(&program).unwrap_or(program))
 }
 
 fn image() -> String {
@@ -164,21 +164,21 @@ impl World {
     }
 }
 
-fn plugin(podman: &str, network: Network) -> PodmanSandbox {
+fn plugin(podman: &str, network: Network) -> ContainerSandbox {
     let settings = Settings {
         podman: podman.into(),
         image: Some(image()),
         network,
         ..Settings::default()
     };
-    PodmanSandbox::new(
+    ContainerSandbox::new(
         settings,
-        PathBuf::from(env!("CARGO_BIN_EXE_podman-sandbox")),
-        PodmanSandbox::podman_env_of(std::env::vars()),
+        PathBuf::from(env!("CARGO_BIN_EXE_container-sandbox")),
+        ContainerSandbox::podman_env_of(std::env::vars()),
     )
 }
 
-fn wrapped(plugin: &PodmanSandbox, request: LaunchRequest) -> Wrapped {
+fn wrapped(plugin: &ContainerSandbox, request: LaunchRequest) -> Wrapped {
     let call = moebius_plugin_api::Call::new(
         moebius_plugin_api::Kind::Launcher,
         "launch",

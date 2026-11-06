@@ -16,7 +16,7 @@
 //!   gateway and check addresses are forwarded to the same ports of the host's loopback (`--splice-only`), so
 //!   nothing else is reachable, of the host or of any other machine; in mode `internet` the same ports and general
 //!   outbound access;
-//! - the environment of [`passed_env`], which the program `podman-sandbox run` writes to the container's standard
+//! - the environment of [`passed_env`], which the program `container-sandbox run` writes to the container's standard
 //!   input before the harness's protocol, as `NAME=value` lines and an empty line, and which [`ENV_SCRIPT`] exports.
 //!   So the run token is in neither Podman's arguments, nor its environment, nor its container configuration.
 //!
@@ -25,7 +25,7 @@
 //!
 //! The image is the repository's own when a person gave it a Dockerfile on its page in Moebius (the project setting
 //! [`DOCKERFILE`]): it is named by the Dockerfile's hash ([`built_image`]), so a changed Dockerfile is a new image,
-//! and `podman-sandbox run` builds it before the container starts when Podman does not have it yet. A Dockerfile for
+//! and `container-sandbox run` builds it before the container starts when Podman does not have it yet. A Dockerfile for
 //! the whole server (the app setting [`BASE_DOCKERFILE`]) is built the same way and is what a repository's Dockerfile
 //! starts from, through the build argument [`BASE_ARG`]; a repository without a Dockerfile of its own runs on it
 //! when it has no `--repo-image`. Without any of those, the image is the `--repo-image` of the repository, else
@@ -64,7 +64,7 @@ pub const BASE_DOCKERFILE: &str = "base_dockerfile";
 pub const BASE_ARG: &str = "MOEBIUS_BASE";
 
 /// The repository of the images built from Dockerfiles; the tag is the Dockerfile's hash.
-pub const BUILT_IMAGE: &str = "localhost/moebius-podman-sandbox";
+pub const BUILT_IMAGE: &str = "localhost/moebius-container-sandbox";
 
 /// A Dockerfile to build into `image` when Podman does not have it yet. `base` is the image it starts from, given to
 /// the build as [`BASE_ARG`].
@@ -187,7 +187,7 @@ pub fn passed_env(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// What `podman-sandbox run` writes to the container's standard input before anything else: a `NAME=value` line for
+/// What `container-sandbox run` writes to the container's standard input before anything else: a `NAME=value` line for
 /// each of `names` that `env` has, and an empty line. A name that is not a shell name or a value with a line break
 /// would not reach the harness as it is, so it is refused.
 pub fn env_lines<'a>(
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(after(&args, "--name"), ["moebius-run-7-a"]);
         assert_eq!(
             after(&args, "--label"),
-            ["moebius.plugin=podman-sandbox", "moebius.run=7"]
+            ["moebius.plugin=container-sandbox", "moebius.run=7"]
         );
         assert_eq!(
             after(&args, "--tmpfs"),
@@ -851,7 +851,11 @@ mod tests {
             .project_settings
             .insert(DOCKERFILE.into(), "FROM debian\n".into());
         let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
-        assert!(image.name.starts_with("localhost/moebius-podman-sandbox:"));
+        assert!(
+            image
+                .name
+                .starts_with("localhost/moebius-container-sandbox:")
+        );
         assert_eq!(image.name.len(), BUILT_IMAGE.len() + 1 + 32);
         assert_eq!(image.builds.len(), 1);
         assert_eq!(image.builds[0].text, "FROM debian\n");

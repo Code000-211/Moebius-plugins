@@ -146,24 +146,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "moebius-plugin-nono-sandbox"
-version = "0.3.0"
-dependencies = [
- "moebius-plugin-api",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "moebius-plugin-podman-sandbox"
+name = "moebius-plugin-container-sandbox"
 version = "0.1.0"
 dependencies = [
  "moebius-plugin-api",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "moebius-plugin-nono-sandbox"
+version = "0.3.0"
+dependencies = [
+ "moebius-plugin-api",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

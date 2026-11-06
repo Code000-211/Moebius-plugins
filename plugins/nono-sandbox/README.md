@@ -75,7 +75,7 @@ launches = true
 
 Moebius can have several launchers, each for the agents of its `launch_agents`; a run goes to the first that takes its
 agent. This sandboxes the Moebius agent with nono, whose profile lets it reach the desktop API, and leaves every other
-agent to another launcher, such as `podman-sandbox`:
+agent to another launcher, such as `container-sandbox`:
 
 ```toml
 [[plugins]]
@@ -85,8 +85,8 @@ launches = true
 launch_agents = ["Moebius"]
 
 [[plugins]]
-name = "podman-sandbox"
-path = "/opt/moebius/plugins/podman-sandbox"
+name = "container-sandbox"
+path = "/opt/moebius/plugins/container-sandbox"
 args = ["--exclude-agent", "Moebius"]
 launches = true
 ```

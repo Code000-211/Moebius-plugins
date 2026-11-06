@@ -1,4 +1,4 @@
-# podman-sandbox
+# container-sandbox
 
 A [Moebius](https://github.com/Code000-211/moebius) launcher plugin. It starts every Pi-Bolt process (a card's run, a
 chat's Pi) in a rootless [Podman](https://podman.io) container of an image made for the project, from a Dockerfile you
@@ -13,7 +13,7 @@ plugin gives a run its own system: what it needs is installed in the image, not 
 
 ## What a run sees
 
-For every launch the plugin answers with itself, `podman-sandbox run`, around
+For every launch the plugin answers with itself, `container-sandbox run`, around
 `podman run --rm --interactive --init --pull never --log-driver none --userns keep-id --cap-drop ALL --security-opt no-new-privileges … <image> /bin/sh -c <script> moebius-env <pi-bolt> <args>`.
 
 | | |
@@ -27,7 +27,7 @@ For every launch the plugin answers with itself, `podman-sandbox run`, around
 | Network, mode `internet` (default) | The same forwarded ports, and general outbound access through pasta. The host's other loopback ports stay out of reach. |
 | Environment | `HOME` (`/home/moebius`), `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lower-case), `PI_CODING_AGENT_DIR`, `MOEBIUS` and `MOEBIUS_*`, and the image's own. No provider keys. |
 
-**The run token** reaches the container through its standard input, not through Podman. `podman-sandbox run` starts
+**The run token** reaches the container through its standard input, not through Podman. `container-sandbox run` starts
 Podman with its own environment minus the run's variables. It writes those variables to the container's standard input
 as `NAME=value` lines and an empty line, then relays Moebius's standard input. In the container, `/bin/sh` exports each
 line (`export "$line"`, which assigns and never evaluates) and becomes Pi-Bolt, which reads the rest. The token is
@@ -52,15 +52,15 @@ run's `launcher_note` event.
 
 Stop and cleanup:
 
-- The stop command (`podman-sandbox stop <podman> <container>`) is `podman rm --force --time 0 --ignore`. It always
+- The stop command (`container-sandbox stop <podman> <container>`) is `podman rm --force --time 0 --ignore`. It always
   succeeds, and only for a container named like one of this plugin's.
 - The container has `--rm`, so a container that ends on its own leaves nothing.
-- Containers are labelled `moebius.plugin=podman-sandbox` and `moebius.run=<id>`. At the server's start, `leftovers`
+- Containers are labelled `moebius.plugin=container-sandbox` and `moebius.run=<id>`. At the server's start, `leftovers`
   names the containers of runs that are not running, and the core removes them.
 
 ## The Dockerfiles
 
-The plugin asks for two Dockerfiles, both in the web app in a box named `podman-sandbox`, and a person writes them there
+The plugin asks for two Dockerfiles, both in the web app in a box named `container-sandbox`, and a person writes them there
 and saves them; the next run uses them. The box is the plugin's own page: above each Dockerfile, "Start from" offers
 presets that replace its text, to edit before saving.
 
@@ -92,17 +92,17 @@ The presets are the files of [`page/presets/`](page/presets/); the page is [`pag
 The image of a run is the first that applies: the repository's Dockerfile, its `--repo-image`, the base Dockerfile
 itself, then `--image`. Left empty, the next one applies.
 
-- The image is named by the Dockerfile's hash, `localhost/moebius-podman-sandbox:<first 32 hex digits of its SHA-256>`,
+- The image is named by the Dockerfile's hash, `localhost/moebius-container-sandbox:<first 32 hex digits of its SHA-256>`,
   so the same text is built once and a changed one is a new image. A repository's image built on a base is named by
   both, so a changed base builds every repository's image again at its next run.
-- Each is built by the wrapped launch, `podman-sandbox run --build <image> <directory> [--base <image>]`, the base first,
+- Each is built by the wrapped launch, `container-sandbox run --build <image> <directory> [--base <image>]`, the base first,
   before the container starts and only when Podman does not have it yet: the first run after a change waits for the build, and the build's output is in
   the run's log. A build that fails fails the run, with a sentence saying so.
 - The build context is a directory that holds the Dockerfile alone (one for each, removed when the run ends), so `COPY` and `ADD` of
   local files find nothing; the worktree is mounted at run time, not baked in. `FROM` pulls its base image as Podman's
   `build` does (`--pull missing`), with the network of the server's user.
-- Built images are labelled `moebius.plugin=podman-sandbox`; the plugin does not remove the ones a changed Dockerfile left
-  behind (`podman image prune --all --filter label=moebius.plugin=podman-sandbox` does).
+- Built images are labelled `moebius.plugin=container-sandbox`; the plugin does not remove the ones a changed Dockerfile left
+  behind (`podman image prune --all --filter label=moebius.plugin=container-sandbox` does).
 - Only a person can change them, never an agent: Moebius refuses the Moebius agent's change of a project or app setting.
 
 ## Mounts
@@ -153,8 +153,8 @@ with a sentence saying which.
 
 ```toml
 [[plugins]]
-name = "podman-sandbox"
-path = "/opt/moebius/plugins/podman-sandbox"
+name = "container-sandbox"
+path = "/opt/moebius/plugins/container-sandbox"
 args = [
   "--image", "localhost/moebius-base:latest",
   "--repo-image", "shop=localhost/shop:latest",
@@ -220,7 +220,7 @@ separately (`dnf install podman passt`, `apt install podman passt`).
 
 ## Tests
 
-`cargo test -p moebius-plugin-podman-sandbox` runs the unit tests and `tests/protocol.rs`. The unit tests cover the
+`cargo test -p moebius-plugin-container-sandbox` runs the unit tests and `tests/protocol.rs`. The unit tests cover the
 container's arguments, the settings, the image chosen from the Dockerfiles, the checks against a fake Podman, the builds
 of missing images (the base first), the launch and the leftovers. The protocol test
 starts the built program and speaks JSON Lines to it, then runs the wrapped launch against a fake Podman and checks that

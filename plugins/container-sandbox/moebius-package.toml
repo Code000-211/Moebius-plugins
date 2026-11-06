@@ -1,11 +1,11 @@
 # The package manifest of the Podman sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
 
-name = "podman-sandbox"
+name = "container-sandbox"
 version = "0.1.0"
 kind = "plugin"
 description = "Runs every Pi-Bolt process in a rootless Podman container of the project's image, built from a Dockerfile set on the repository's page, on a base Dockerfile set for the whole server, or named in its settings: its worktree, a few read-only paths and general outbound network access (the mode `moebius` limits it to the Moebius router)."
 license = "Apache-2.0"
-homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/podman-sandbox"
+homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/container-sandbox"
 
 # The Moebius versions it works with: the ones whose plugin API has the project and app settings and the settings page.
 moebius = ">=0.8"
@@ -19,7 +19,7 @@ targets = [
 [plugin]
 # What it is: a program speaking the process plugin protocol as a launcher.
 kind = "launcher"
-program = "podman-sandbox"
+program = "container-sandbox"
 # The [[plugins]] entry that installs it needs `launches = true`.
 launches = true
 # The core's [[plugins]] entry has no table of settings, so the settings are the program's arguments.

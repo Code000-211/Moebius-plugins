@@ -1,7 +1,7 @@
 //! The subcommands of this program that a wrapped launch uses. The core starts them itself, whether or not the plugin
 //! is still running, so they are this program rather than a shell line:
 //!
-//! - `podman-sandbox run --podman <podman> --pass <names> [--build <image> <directory> [--base <image>]]… --
+//! - `container-sandbox run --podman <podman> --pass <names> [--build <image> <directory> [--base <image>]]… --
 //!   <podman arguments>` is the wrapped program. With `--build`, when Podman has no `<image>` it first builds it from
 //!   `<directory>/Dockerfile` with that directory as the context, its output on the standard error (the run's log),
 //!   and fails when the build fails; `--base` gives that build the image it starts from as the build argument
@@ -11,7 +11,7 @@
 //!   reads them), then copies its standard input to Podman's until it ends. The standard output goes straight
 //!   through. So the run token reaches the container without being in Podman's arguments, its environment or its
 //!   container configuration.
-//! - `podman-sandbox stop <podman> <container>` removes the container. It succeeds when there is nothing to remove,
+//! - `container-sandbox stop <podman> <container>` removes the container. It succeeds when there is nothing to remove,
 //!   since the core runs it more than once for one process.
 
 use std::collections::BTreeMap;
@@ -203,7 +203,7 @@ fn ensure_image(
     if exists.success() {
         return Ok(());
     }
-    eprintln!("podman-sandbox: building {image} from a Dockerfile");
+    eprintln!("container-sandbox: building {image} from a Dockerfile");
     let mut command = podman_command();
     command
         .arg("build")
@@ -266,7 +266,7 @@ fn stop(podman: &str, name: &str) -> String {
 
 /// The path of this program, for the commands.
 pub fn current_exe() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("podman-sandbox"))
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("container-sandbox"))
 }
 
 #[cfg(test)]
@@ -311,7 +311,7 @@ mod tests {
             "podman",
             &[],
             &[Build {
-                image: "localhost/moebius-podman-sandbox:ab".into(),
+                image: "localhost/moebius-container-sandbox:ab".into(),
                 dir: "/tmp/n-build".into(),
                 base: None,
             }],
@@ -326,7 +326,7 @@ mod tests {
                 "--pass",
                 "",
                 "--build",
-                "localhost/moebius-podman-sandbox:ab",
+                "localhost/moebius-container-sandbox:ab",
                 "/tmp/n-build",
                 "--",
                 "run"
@@ -358,7 +358,7 @@ mod tests {
                 &podman.to_string_lossy(),
                 &[],
                 &[Build {
-                    image: "localhost/moebius-podman-sandbox:ab".into(),
+                    image: "localhost/moebius-container-sandbox:ab".into(),
                     dir: context.clone(),
                     base: None,
                 }],
@@ -388,9 +388,9 @@ mod tests {
         assert_eq!(
             calls,
             [
-                "image exists localhost/moebius-podman-sandbox:ab".to_string(),
+                "image exists localhost/moebius-container-sandbox:ab".to_string(),
                 format!(
-                    "build --tag localhost/moebius-podman-sandbox:ab --label moebius.plugin=podman-sandbox --file {} {}",
+                    "build --tag localhost/moebius-container-sandbox:ab --label moebius.plugin=container-sandbox --file {} {}",
                     file.display(),
                     context.display()
                 ),
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(
             calls,
             [
-                "image exists localhost/moebius-podman-sandbox:ab",
+                "image exists localhost/moebius-container-sandbox:ab",
                 "run --rm"
             ]
         );
@@ -489,7 +489,7 @@ mod tests {
             .collect();
         let build_call = |image: &str, extra: &str, name: &str| {
             format!(
-                "build --tag {image} --label moebius.plugin=podman-sandbox {extra}--file {} {}",
+                "build --tag {image} --label moebius.plugin=container-sandbox {extra}--file {} {}",
                 dir.path().join(name).join("Dockerfile").display(),
                 dir.path().join(name).display()
             )

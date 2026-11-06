@@ -22,7 +22,7 @@ mod linux {
 
     impl Plugin {
         fn start(args: &[&str]) -> Self {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_podman-sandbox"))
+            let mut child = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
                 .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -106,7 +106,7 @@ mod linux {
 
         let manifest = plugin.line();
         assert_eq!(manifest["type"], "manifest");
-        assert_eq!(manifest["manifest"]["name"], "podman-sandbox");
+        assert_eq!(manifest["manifest"]["name"], "container-sandbox");
         assert_eq!(manifest["manifest"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(manifest["manifest"]["kinds"], json!(["launcher"]));
         // Each repository is asked for the Dockerfile of its image, in a code editor.
@@ -124,7 +124,7 @@ mod linux {
         assert_eq!(reply["type"], "reply", "{reply}");
         let result = &reply["result"];
         assert_eq!(result["answer"], "wrapped");
-        assert_eq!(result["program"], env!("CARGO_BIN_EXE_podman-sandbox"));
+        assert_eq!(result["program"], env!("CARGO_BIN_EXE_container-sandbox"));
         assert!(result["env"].get("ANTHROPIC_API_KEY").is_none());
         assert!(!result["args"].to_string().contains("moebius-run-x"));
 
@@ -193,7 +193,7 @@ mod linux {
         let reply = plugin.call(6, "launch", params);
         let args = strings(&reply["result"]["args"]);
         let at = args.iter().position(|a| a == "--build").expect("a build");
-        assert!(args[at + 1].starts_with("localhost/moebius-podman-sandbox:"));
+        assert!(args[at + 1].starts_with("localhost/moebius-container-sandbox:"));
         // The image is the one built and the one run.
         assert_eq!(args.iter().filter(|a| **a == args[at + 1]).count(), 2);
         let context = Path::new(&args[at + 2]);
@@ -254,7 +254,7 @@ mod linux {
         let dir = tempfile::tempdir().unwrap();
         let podman = dir.path().join("podman");
         script(&podman, "#!/bin/sh\ncat > /dev/null\nexit 3\n");
-        let status = Command::new(env!("CARGO_BIN_EXE_podman-sandbox"))
+        let status = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
             .args([
                 "run",
                 "--podman",
@@ -274,7 +274,7 @@ mod linux {
     fn a_missing_image_stops_the_plugin_with_a_sentence() {
         let dir = tempfile::tempdir().unwrap();
         let podman = fake_podman(dir.path());
-        let output = Command::new(env!("CARGO_BIN_EXE_podman-sandbox"))
+        let output = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
             .args([
                 "--podman",
                 podman.to_str().unwrap(),
@@ -292,7 +292,7 @@ mod linux {
 
     #[test]
     fn a_setting_that_is_wrong_stops_the_plugin_with_a_sentence() {
-        let output = Command::new(env!("CARGO_BIN_EXE_podman-sandbox"))
+        let output = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
             .args(["--network", "wide-open"])
             .stdin(Stdio::null())
             .output()
@@ -305,7 +305,7 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn the_plugin_refuses_to_start_off_linux() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_podman-sandbox"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
         .args(["--image", "base"])
         .stdin(std::process::Stdio::null())
         .output()
