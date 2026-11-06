@@ -79,13 +79,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install pasta and pull the image
         run: |
-          # The runner has Podman; pasta, which makes the containers' network, is the package passt. The runner's
-          # passt is too old for `--splice-only`, so a pinned release replaces its program.
-          sudo apt-get update
-          sudo apt-get install -y passt
+          # The runner has Podman; pasta, which makes the containers' network, is passt. The runner's package is too
+          # old for `--splice-only`, and its AppArmor profile (which follows /usr/bin/pasta) is too narrow for a newer
+          # pasta, so a pinned release goes to /usr/local, which the profile does not cover and the PATH reaches first.
           git clone --branch 2026_10_02.cba3570 --depth 1 https://passt.top/passt "$RUNNER_TEMP/passt"
           make -C "$RUNNER_TEMP/passt"
-          sudo make -C "$RUNNER_TEMP/passt" install prefix=/usr
+          sudo make -C "$RUNNER_TEMP/passt" install prefix=/usr/local
+          command -v pasta
           pasta --version | head -n 1
           podman --version
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
