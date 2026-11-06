@@ -1,5 +1,6 @@
 //! Runs the built plugin as a process and speaks the JSON Lines protocol to it, the way Moebius does, then starts the
-//! wrapped launch it answers with, against a fake Podman.
+//! wrapped launch it answers with, against a fake Podman. The Docker side of the wrapped launch is tested in the unit
+//! tests of `commands`, since its relay would listen on the router's port of this machine.
 
 mod common;
 
@@ -96,7 +97,7 @@ mod linux {
             "#!/bin/sh\nprintf 'token=[%s] key=[%s] args=%s\\n' \"$MOEBIUS_RUN_TOKEN\" \"$ANTHROPIC_API_KEY\" \"$*\"\nexec cat\n",
         );
         let mut plugin = Plugin::start(&[
-            "--podman",
+            "--engine-program",
             podman.to_str().unwrap(),
             "--image",
             "localhost/base",
@@ -257,7 +258,8 @@ mod linux {
         let status = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
             .args([
                 "run",
-                "--podman",
+                "--engine",
+                "podman",
                 podman.to_str().unwrap(),
                 "--pass",
                 "",
@@ -276,7 +278,7 @@ mod linux {
         let podman = fake_podman(dir.path());
         let output = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
             .args([
-                "--podman",
+                "--engine-program",
                 podman.to_str().unwrap(),
                 "--image",
                 "localhost/absent",
@@ -288,6 +290,30 @@ mod linux {
         assert!(output.stdout.is_empty(), "no manifest is written");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("localhost/absent"), "{stderr}");
+    }
+
+    #[test]
+    fn a_docker_that_runs_rootless_stops_the_plugin_with_a_sentence() {
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        script(
+            &docker,
+            "#!/bin/sh\necho '{\"ServerVersion\":\"27.3.1\",\"OperatingSystem\":\"Ubuntu\",\"SecurityOptions\":[\"name=rootless\"]}'\n",
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_container-sandbox"))
+            .args([
+                "--engine",
+                "docker",
+                "--engine-program",
+                docker.to_str().unwrap(),
+            ])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty(), "no manifest is written");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("rootless"), "{stderr}");
     }
 
     #[test]

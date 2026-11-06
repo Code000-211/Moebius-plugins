@@ -1,9 +1,9 @@
-//! The container of one run, as the arguments of `podman run`, and the environment the run keeps.
+//! The container of one run, as the arguments of the engine's `run`, and the environment the run keeps.
 //!
 //! The container is removed when it ends (`--rm`), starts nothing that is not in its image (`--pull never`), keeps no
 //! log of what the harness writes (`--log-driver none`, the standard output is Pi's protocol), runs as the user of
-//! the server (`--userns=keep-id`, so what it writes in the worktree is the user's) without capabilities or a way to
-//! gain them, and reaps orphans (`--init`). It sees exactly:
+//! the server (Podman's `--userns keep-id`, Docker's `--user <uid>:<gid>`, so what it writes in the worktree is the
+//! user's) without capabilities or a way to gain them, and reaps orphans (`--init`). It sees exactly:
 //!
 //! - read and write, at the same paths as on the host: the request's `read_write` paths and the working directory
 //!   (the worktree, the agent directory, the sessions directory, the run's temporary directory);
@@ -12,24 +12,27 @@
 //! - its image, its own `/tmp`, a fresh `HOME` ([`HOME`], a tmpfs of the run) and the `caches` setting's volumes;
 //! - the folders and volumes a person gave the repository on its page (the project setting
 //!   [`MOUNTS`](crate::mounts::MOUNTS)), each checked by [`crate::mounts`];
-//! - the network, through pasta: in mode `moebius` no interface but the loopback, on which the ports of the router,
-//!   gateway and check addresses are forwarded to the same ports of the host's loopback (`--splice-only`), so
-//!   nothing else is reachable, of the host or of any other machine; in mode `internet` the same ports and general
-//!   outbound access;
+//! - the ports of the router, gateway and check addresses on its own loopback, and nothing else of the host. With
+//!   Podman, pasta forwards them to the same ports of the host's loopback; in mode `moebius` it makes no other
+//!   interface (`--splice-only`), so nothing else is reachable, of the host or of any other machine, and in mode
+//!   `internet` it adds general outbound access. Docker has no such network, so this program relays them
+//!   ([`crate::relay`]): in the container, mounted read only at [`RELAY_PROGRAM`], it listens on those ports and
+//!   connects to Unix sockets in [`RELAY_DIR`], where `container-sandbox run` on the host connects them to the host's
+//!   ports. The container's network is then `none` in mode `moebius` and Docker's `bridge` in mode `internet`;
 //! - the environment of [`passed_env`], which the program `container-sandbox run` writes to the container's standard
 //!   input before the harness's protocol, as `NAME=value` lines and an empty line, and which [`ENV_SCRIPT`] exports.
-//!   So the run token is in neither Podman's arguments, nor its environment, nor its container configuration.
+//!   So the run token is in neither the engine's arguments, nor its environment, nor its container configuration.
 //!
-//! Every host path is mounted with `z`, which labels it for containers on a host with SELinux (Fedora's Podman
-//! refuses a mount otherwise) and does nothing elsewhere.
+//! Every host path is mounted with `z`, which labels it for containers on a host with SELinux (Fedora's engines
+//! refuse a mount otherwise) and does nothing elsewhere.
 //!
 //! The image is the repository's own when a person gave it a Dockerfile on its page in Moebius (the project setting
 //! [`DOCKERFILE`]): it is named by the Dockerfile's hash ([`built_image`]), so a changed Dockerfile is a new image,
-//! and `container-sandbox run` builds it before the container starts when Podman does not have it yet. A Dockerfile for
-//! the whole server (the app setting [`BASE_DOCKERFILE`]) is built the same way and is what a repository's Dockerfile
-//! starts from, through the build argument [`BASE_ARG`]; a repository without a Dockerfile of its own runs on it
-//! when it has no `--repo-image`. Without any of those, the image is the `--repo-image` of the repository, else
-//! `--image`.
+//! and `container-sandbox run` builds it before the container starts when the engine does not have it yet. A
+//! Dockerfile for the whole server (the app setting [`BASE_DOCKERFILE`]) is built the same way and is what a
+//! repository's Dockerfile starts from, through the build argument [`BASE_ARG`]; a repository without a Dockerfile of
+//! its own runs on it when it has no `--repo-image`. Without any of those, the image is the `--repo-image` of the
+//! repository, else `--image`.
 //!
 //! The directory of the harness's installation comes from the environment, not from the request, so one that
 //! contains the worktree, the clone or another path the run writes fails the launch: it would make the data
@@ -41,10 +44,59 @@ use std::path::{Path, PathBuf};
 use moebius_plugin_api::{LaunchRequest, Urls};
 
 use crate::mounts::{Granted, MOUNTS, volumes};
-use crate::settings::{Network, Settings};
+use crate::settings::{Engine, Network, Settings};
 
 /// The run's `HOME` in the container, a tmpfs owned by the run's user.
 pub const HOME: &str = "/home/moebius";
+
+/// Where a Docker container has this program, which relays the router's ports in it.
+pub const RELAY_PROGRAM: &str = "/run/moebius-sandbox/container-sandbox";
+
+/// Where a Docker container has the directory of the relay's Unix sockets, one named by each port.
+pub const RELAY_DIR: &str = "/run/moebius-sandbox/relay";
+
+/// The user of the server, whom a Docker container runs as and whose its `HOME` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct User {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl User {
+    /// This process's user and group, which own its `/proc/self`; `None` off Linux, where the plugin does not run.
+    pub fn current() -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata("/proc/self").ok()?;
+            Some(Self {
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+}
+
+/// What a Docker container needs of the host besides the request: the user it runs as, this program, which relays
+/// in it, and the directory, made for the run, of the relay's sockets. A Podman container needs none of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Host {
+    pub user: User,
+    pub program: PathBuf,
+    pub relay: PathBuf,
+}
+
+/// The container of a run: the engine's arguments that start it, its image, the named volumes it mounts, and the
+/// ports a Docker run relays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Container {
+    pub args: Vec<String>,
+    pub image: Image,
+    pub volumes: Vec<String>,
+    pub ports: Vec<u16>,
+}
 
 /// The labels by which the plugin knows its containers and their runs.
 pub const PLUGIN_LABEL: &str = "moebius.plugin";
@@ -66,7 +118,7 @@ pub const BASE_ARG: &str = "MOEBIUS_BASE";
 /// The repository of the images built from Dockerfiles; the tag is the Dockerfile's hash.
 pub const BUILT_IMAGE: &str = "localhost/moebius-container-sandbox";
 
-/// A Dockerfile to build into `image` when Podman does not have it yet. `base` is the image it starts from, given to
+/// A Dockerfile to build into `image` when the engine does not have it yet. `base` is the image it starts from, given to
 /// the build as [`BASE_ARG`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dockerfile {
@@ -110,7 +162,7 @@ pub const ENV_SCRIPT: &str =
 pub enum ContainerError {
     #[error("the path {0:?} is not absolute; the sandbox only mounts absolute paths")]
     Relative(String),
-    #[error("the path {0:?} contains : or , which a Podman mount cannot name")]
+    #[error("the path {0:?} contains : or , which a container's mount cannot name")]
     Unmountable(String),
     #[error("cannot read the host and port of the address {0:?}")]
     BadUrl(String),
@@ -332,9 +384,30 @@ fn host_and_port(url: &str) -> Result<(String, u16), ContainerError> {
     Ok((host.to_ascii_lowercase(), port))
 }
 
-/// The value of `--network`: pasta, with each port forwarded from the container's loopback to the host's. In mode
+/// The `--network` of the container. Podman's is pasta (see [`pasta`]); Docker's is none in mode `moebius`, so that
+/// the relayed ports are all there is, and its bridge in mode `internet`.
+pub fn network(engine: Engine, mode: Network, ports: &[u16]) -> String {
+    match (engine, mode) {
+        (Engine::Podman, _) => pasta(mode, ports),
+        (Engine::Docker, Network::Moebius) => "none".into(),
+        (Engine::Docker, Network::Internet) => "bridge".into(),
+    }
+}
+
+/// The options of a named volume, mounted writable or not: Podman's `U` makes it the run's user's, which Docker
+/// cannot do, so `container-sandbox run` gives a Docker run's volumes to the user before the container starts.
+pub fn volume_options(engine: Engine, writable: bool) -> &'static str {
+    match (engine, writable) {
+        (Engine::Podman, true) => "U,z",
+        (Engine::Podman, false) => "ro,U,z",
+        (Engine::Docker, true) => "z",
+        (Engine::Docker, false) => "ro,z",
+    }
+}
+
+/// Pasta's network, with each port forwarded from the container's loopback to the host's. In mode
 /// `moebius` pasta makes no interface but the loopback (`--splice-only`), so those ports are all there is.
-pub fn network(mode: Network, ports: &[u16]) -> String {
+pub fn pasta(mode: Network, ports: &[u16]) -> String {
     let mut options = Vec::new();
     if mode == Network::Moebius {
         options.push("--splice-only".to_string());
@@ -414,14 +487,15 @@ fn mountable(path: &Path) -> Result<String, ContainerError> {
     Ok(text)
 }
 
-/// The arguments after `podman` that start the run of `request` in the container `name`, with the network mode
-/// `mode`, and the image they use.
+/// The container that starts the run of `request` as `name`, with the network mode `mode`, on the host `host`.
 pub fn build(
     request: &LaunchRequest,
     settings: &Settings,
     mode: Network,
     name: &str,
-) -> Result<(Vec<String>, Image), ContainerError> {
+    host: &Host,
+) -> Result<Container, ContainerError> {
+    let engine = settings.engine;
     let image = image(request, settings)?;
     let ports = loopback_ports(&request.urls)?;
 
@@ -497,10 +571,23 @@ pub fn build(
                 caches: &settings.caches,
                 home: home.as_deref(),
             },
+            engine,
         )?,
         None => Vec::new(),
     };
 
+    let user = match engine {
+        Engine::Podman => ["--userns".to_string(), "keep-id".into()],
+        Engine::Docker => [
+            "--user".to_string(),
+            format!("{}:{}", host.user.uid, host.user.gid),
+        ],
+    };
+    // A tmpfs is root's unless told otherwise: Podman's `U` gives it to the run's user, Docker takes the ids.
+    let home_owner = match engine {
+        Engine::Podman => "U".to_string(),
+        Engine::Docker => format!("uid={},gid={}", host.user.uid, host.user.gid),
+    };
     let mut args: Vec<String> = [
         "run",
         "--rm",
@@ -516,16 +603,16 @@ pub fn build(
         &format!("{PLUGIN_LABEL}={}", crate::NAME),
         "--label",
         &format!("{RUN_LABEL}={}", request.run.id),
-        "--userns",
-        "keep-id",
+        &user[0],
+        &user[1],
         "--cap-drop",
         "ALL",
         "--security-opt",
         "no-new-privileges",
         "--network",
-        &network(mode, &ports),
+        &network(engine, mode, &ports),
         "--tmpfs",
-        &format!("{HOME}:rw,exec,mode=0700,U"),
+        &format!("{HOME}:rw,exec,mode=0700,{home_owner}"),
         "--env",
         &format!("HOME={HOME}"),
     ]
@@ -533,29 +620,73 @@ pub fn build(
     .into();
     for cache in &settings.caches {
         args.push("--volume".into());
-        args.push(format!("{}:{}:U,z", cache.volume, cache.path));
+        args.push(format!(
+            "{}:{}:{}",
+            cache.volume,
+            cache.path,
+            volume_options(engine, true)
+        ));
     }
     for (path, writable) in &mounts {
         let options = if *writable { "z" } else { "ro,z" };
         args.push("--volume".into());
         args.push(format!("{path}:{path}:{options}"));
     }
+    // A folder is named by its absolute path, a volume by a name that does not start with `/`.
+    let named: Vec<String> = settings
+        .caches
+        .iter()
+        .map(|cache| cache.volume.clone())
+        .chain(
+            extra
+                .iter()
+                .filter_map(|value| value.split(':').next())
+                .filter(|source| !source.starts_with('/'))
+                .map(String::from),
+        )
+        .collect();
     for volume in extra {
         args.push("--volume".into());
         args.push(volume);
+    }
+    if engine == Engine::Docker {
+        for (source, target) in [(&host.program, RELAY_PROGRAM), (&host.relay, RELAY_DIR)] {
+            args.push("--volume".into());
+            args.push(format!("{}:{target}:ro,z", mountable(source)?));
+        }
     }
     args.extend([
         "--workdir".to_string(),
         mountable(Path::new(&request.dir))?,
         image.name.clone(),
-        "/bin/sh".into(),
+    ]);
+    if engine == Engine::Docker {
+        let list: Vec<String> = ports.iter().map(u16::to_string).collect();
+        args.extend([
+            RELAY_PROGRAM.to_string(),
+            "relay".into(),
+            RELAY_DIR.into(),
+            list.join(","),
+            "--".into(),
+        ]);
+    }
+    args.extend([
+        "/bin/sh".to_string(),
         "-c".into(),
         ENV_SCRIPT.into(),
         "moebius-env".into(),
         program.to_string_lossy().into_owned(),
     ]);
     args.extend(request.args.iter().cloned());
-    Ok((args, image))
+    let mut volumes = named;
+    volumes.sort();
+    volumes.dedup();
+    Ok(Container {
+        args,
+        image,
+        volumes,
+        ports,
+    })
 }
 
 // The paths in these tests are Unix paths.
@@ -626,6 +757,25 @@ mod tests {
         }
     }
 
+    fn host() -> Host {
+        Host {
+            user: User {
+                uid: 1000,
+                gid: 1001,
+            },
+            program: PathBuf::from("/opt/plugins/container-sandbox"),
+            relay: PathBuf::from("/tmp/moebius-run-7-a-relay"),
+        }
+    }
+
+    fn docker() -> Settings {
+        Settings {
+            engine: Engine::Docker,
+            program: "docker".into(),
+            ..settings()
+        }
+    }
+
     fn settings() -> Settings {
         Settings {
             image: Some("localhost/base".into()),
@@ -644,8 +794,14 @@ mod tests {
     fn the_run_mounts_what_it_writes_and_reads_at_the_same_paths() {
         let world = world();
         let request = request(&world);
-        let (args, image) =
-            build(&request, &settings(), Network::Moebius, "moebius-run-7-a").unwrap();
+        let Container { args, image, .. } = build(
+            &request,
+            &settings(),
+            Network::Moebius,
+            "moebius-run-7-a",
+            &host(),
+        )
+        .unwrap();
         assert_eq!(image.name, "localhost/base");
         let at = |p: &str| world.root.join(p).to_string_lossy().into_owned();
         let volumes = after(&args, "--volume");
@@ -686,7 +842,14 @@ mod tests {
     #[test]
     fn nothing_else_of_the_host_is_mounted() {
         let world = world();
-        let (args, _) = build(&request(&world), &settings(), Network::Moebius, "n").unwrap();
+        let Container { args, .. } = build(
+            &request(&world),
+            &settings(),
+            Network::Moebius,
+            "n",
+            &host(),
+        )
+        .unwrap();
         let data = world.root.join("data").to_string_lossy().into_owned();
         for volume in after(&args, "--volume") {
             let source = volume.split(':').next().unwrap();
@@ -702,11 +865,12 @@ mod tests {
     #[test]
     fn the_container_is_rootless_without_capabilities_and_leaves_nothing() {
         let world = world();
-        let (args, _) = build(
+        let Container { args, .. } = build(
             &request(&world),
             &settings(),
             Network::Moebius,
             "moebius-run-7-a",
+            &host(),
         )
         .unwrap();
         for flag in ["--rm", "--interactive", "--init"] {
@@ -730,14 +894,130 @@ mod tests {
     }
 
     #[test]
+    fn a_docker_container_is_the_users_by_its_ids_and_relays_the_ports_through_this_program() {
+        let world = world();
+        let mut settings = docker();
+        settings.caches.push(Cache {
+            volume: "moebius-npm".into(),
+            path: "/home/moebius/.npm".into(),
+        });
+        let Container {
+            args,
+            image,
+            volumes,
+            ports,
+        } = build(&request(&world), &settings, Network::Moebius, "n", &host()).unwrap();
+        assert_eq!(after(&args, "--user"), ["1000:1001"]);
+        assert!(after(&args, "--userns").is_empty());
+        assert_eq!(
+            after(&args, "--tmpfs"),
+            ["/home/moebius:rw,exec,mode=0700,uid=1000,gid=1001"]
+        );
+        assert_eq!(after(&args, "--network"), ["none"]);
+        // Docker has no `U`: the volume is given to the user before the run.
+        let mounted = after(&args, "--volume");
+        assert!(
+            mounted.contains(&"moebius-npm:/home/moebius/.npm:z"),
+            "{mounted:?}"
+        );
+        assert_eq!(volumes, ["moebius-npm"]);
+        assert_eq!(ports, [7172, 7173]);
+        // This program and the sockets' directory, read only at their places in the container.
+        assert!(mounted.contains(
+            &"/opt/plugins/container-sandbox:/run/moebius-sandbox/container-sandbox:ro,z"
+        ));
+        assert!(mounted.contains(&"/tmp/moebius-run-7-a-relay:/run/moebius-sandbox/relay:ro,z"));
+        let at = |p: &str| world.root.join(p).to_string_lossy().into_owned();
+        let tail = &args[args.iter().position(|a| *a == image.name).unwrap()..];
+        assert_eq!(
+            tail,
+            [
+                "localhost/base",
+                RELAY_PROGRAM,
+                "relay",
+                RELAY_DIR,
+                "7172,7173",
+                "--",
+                "/bin/sh",
+                "-c",
+                ENV_SCRIPT,
+                "moebius-env",
+                &at("bin/pi-bolt"),
+                "--mode",
+                "rpc"
+            ]
+        );
+        // What the two engines share is the same.
+        for flag in ["--rm", "--interactive", "--init"] {
+            assert!(args.contains(&flag.to_string()), "{flag}");
+        }
+        assert_eq!(after(&args, "--pull"), ["never"]);
+        assert_eq!(after(&args, "--cap-drop"), ["ALL"]);
+        assert_eq!(after(&args, "--security-opt"), ["no-new-privileges"]);
+
+        let Container { args, .. } =
+            build(&request(&world), &settings, Network::Internet, "n", &host()).unwrap();
+        assert_eq!(after(&args, "--network"), ["bridge"]);
+    }
+
+    #[test]
+    fn a_podman_container_relays_nothing_and_its_volumes_are_made_the_users_by_podman() {
+        let world = world();
+        let mut settings = settings();
+        settings.caches.push(Cache {
+            volume: "moebius-npm".into(),
+            path: "/home/moebius/.npm".into(),
+        });
+        let Container { args, image, .. } =
+            build(&request(&world), &settings, Network::Moebius, "n", &host()).unwrap();
+        assert!(
+            !args.iter().any(|a| a.contains("moebius-sandbox")),
+            "{args:?}"
+        );
+        assert!(after(&args, "--user").is_empty());
+        let tail = &args[args.iter().position(|a| *a == image.name).unwrap()..];
+        assert_eq!(tail[1], "/bin/sh");
+    }
+
+    #[test]
+    fn a_docker_runs_volumes_are_the_caches_and_the_repositorys_named_ones() {
+        let world = world();
+        std::fs::create_dir_all(world.root.join("fixtures")).unwrap();
+        let mut request = request(&world);
+        request.project_settings.insert(
+            MOUNTS.into(),
+            format!(
+                "{}:/fixtures\nvolume:shop-cargo:/home/moebius/.cargo\nvolume:shop-data:/data:ro\n",
+                world.root.join("fixtures").display()
+            ),
+        );
+        let Container { args, volumes, .. } =
+            build(&request, &docker(), Network::Moebius, "n", &host()).unwrap();
+        assert_eq!(volumes, ["shop-cargo", "shop-data"]);
+        let mounted = after(&args, "--volume");
+        assert!(
+            mounted.contains(&"shop-cargo:/home/moebius/.cargo:z"),
+            "{mounted:?}"
+        );
+        assert!(mounted.contains(&"shop-data:/data:ro,z"), "{mounted:?}");
+    }
+
+    #[test]
     fn mode_moebius_forwards_only_the_ports_and_internet_adds_the_rest() {
         assert_eq!(
-            network(Network::Moebius, &[7172, 7173]),
+            pasta(Network::Moebius, &[7172, 7173]),
             "pasta:--splice-only,-T,7172,-T,7173"
         );
-        assert_eq!(network(Network::Internet, &[7172]), "pasta:-T,7172");
+        assert_eq!(pasta(Network::Internet, &[7172]), "pasta:-T,7172");
         let world = world();
-        let (args, _) = build(&request(&world), &settings(), Network::Moebius, "n").unwrap();
+        let Container { args, .. } = build(
+            &request(&world),
+            &settings(),
+            Network::Moebius,
+            "n",
+            &host(),
+        )
+        .unwrap();
         assert_eq!(
             after(&args, "--network"),
             ["pasta:--splice-only,-T,7172,-T,7173"]
@@ -750,7 +1030,7 @@ mod tests {
         let mut request = request(&world);
         request.urls.check = "http://10.0.0.5:7173".into();
         assert_eq!(
-            build(&request, &settings(), Network::Internet, "n"),
+            build(&request, &settings(), Network::Internet, "n", &host()),
             Err(ContainerError::NotLoopback("http://10.0.0.5:7173".into()))
         );
         let urls = |router: &str| Urls {
@@ -779,24 +1059,26 @@ mod tests {
         settings
             .repo_images
             .insert("shop".into(), "localhost/shop".into());
-        let (_, image) = build(&request(&world), &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request(&world), &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/shop");
         assert!(image.builds.is_empty());
 
         let mut chat = request(&world);
         chat.clone = None;
-        let (_, image) = build(&chat, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&chat, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/base");
 
         settings.image = None;
-        let error = build(&chat, &settings, Network::Moebius, "n").unwrap_err();
+        let error = build(&chat, &settings, Network::Moebius, "n", &host()).unwrap_err();
         assert!(
             error.to_string().contains("Coder") && error.to_string().contains("--image"),
             "{error}"
         );
         let mut other = request(&world);
         other.clone = Some(world.root.join("data/repos/other").to_string_lossy().into());
-        let error = build(&other, &settings, Network::Moebius, "n").unwrap_err();
+        let error = build(&other, &settings, Network::Moebius, "n", &host()).unwrap_err();
         assert!(error.to_string().contains("repository other"), "{error}");
     }
 
@@ -814,7 +1096,8 @@ mod tests {
                 at("fixtures")
             ),
         );
-        let (args, _) = build(&request, &settings(), Network::Moebius, "n").unwrap();
+        let Container { args, .. } =
+            build(&request, &settings(), Network::Moebius, "n", &host()).unwrap();
         let volumes = after(&args, "--volume");
         assert!(volumes.contains(&format!("{}:/fixtures:ro,z", at("fixtures")).as_str()));
         assert!(volumes.contains(&"shop-cargo:/home/moebius/.cargo:U,z"));
@@ -826,7 +1109,7 @@ mod tests {
         request
             .project_settings
             .insert(MOUNTS.into(), format!("{}:/secrets", at("data")));
-        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        let error = build(&request, &settings(), Network::Moebius, "n", &host()).unwrap_err();
         assert!(matches!(error, ContainerError::Mounts(_)), "{error}");
         assert!(error.to_string().contains("data directory"), "{error}");
         // Nor the path where the worktree is.
@@ -834,7 +1117,7 @@ mod tests {
             MOUNTS.into(),
             format!("{}:{}", at("fixtures"), at("data/worktrees/run-7/src")),
         );
-        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        let error = build(&request, &settings(), Network::Moebius, "n", &host()).unwrap_err();
         assert!(error.to_string().contains("already has"), "{error}");
     }
 
@@ -850,7 +1133,8 @@ mod tests {
         request
             .project_settings
             .insert(DOCKERFILE.into(), "FROM debian\n".into());
-        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { args, image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert!(
             image
                 .name
@@ -870,7 +1154,8 @@ mod tests {
         request
             .project_settings
             .insert(DOCKERFILE.into(), " \n".into());
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/shop");
         assert!(image.builds.is_empty());
     }
@@ -886,7 +1171,8 @@ mod tests {
         request
             .project_settings
             .insert(DOCKERFILE.into(), "FROM ${MOEBIUS_BASE}\n".into());
-        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { args, image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         let base = built_image("FROM debian\n");
         assert_eq!(image.builds.len(), 2);
         assert_eq!(image.builds[0].image, base);
@@ -903,7 +1189,8 @@ mod tests {
 
         // Without a base the repository's Dockerfile is built alone, as it always was.
         request.app_settings.clear();
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, built_image("FROM ${MOEBIUS_BASE}\n"));
         assert_eq!(image.builds.len(), 1);
         assert_eq!(image.builds[0].base, None);
@@ -920,7 +1207,8 @@ mod tests {
             .insert(BASE_DOCKERFILE.into(), "FROM debian\n".into());
 
         // The default image is only for what has nothing else.
-        let (args, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { args, image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, built_image("FROM debian\n"));
         assert_eq!(image.builds.len(), 1);
         assert!(args.contains(&image.name));
@@ -929,19 +1217,22 @@ mod tests {
         settings
             .repo_images
             .insert("shop".into(), "localhost/shop".into());
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/shop");
         assert!(image.builds.is_empty());
 
         // A chat without a repository runs on the base too, and a blank base is none.
         settings.repo_images.clear();
         request.clone = None;
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, built_image("FROM debian\n"));
         request
             .app_settings
             .insert(BASE_DOCKERFILE.into(), "  \n".into());
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/base");
     }
 
@@ -955,7 +1246,8 @@ mod tests {
         let mut request = request(&world);
         assert_eq!(repository(&request).as_deref(), Some("shop"));
         request.repository = Some("renamed".into());
-        let (_, image) = build(&request, &settings, Network::Moebius, "n").unwrap();
+        let Container { image, .. } =
+            build(&request, &settings, Network::Moebius, "n", &host()).unwrap();
         assert_eq!(image.name, "localhost/renamed");
     }
 
@@ -967,7 +1259,8 @@ mod tests {
             volume: "moebius-npm".into(),
             path: "/home/moebius/.npm".into(),
         });
-        let (args, _) = build(&request(&world), &settings, Network::Moebius, "n").unwrap();
+        let Container { args, .. } =
+            build(&request(&world), &settings, Network::Moebius, "n", &host()).unwrap();
         assert!(after(&args, "--volume").contains(&"moebius-npm:/home/moebius/.npm:U,z"));
     }
 
@@ -1003,7 +1296,7 @@ mod tests {
         let mut request = request(&world);
         request.program = "absent".into();
         assert_eq!(
-            build(&request, &settings(), Network::Moebius, "n"),
+            build(&request, &settings(), Network::Moebius, "n", &host()),
             Err(ContainerError::NoProgram("absent".into()))
         );
     }
@@ -1013,7 +1306,7 @@ mod tests {
         let world = world();
         let mut request = request(&world);
         request.program = "/bin/sh".into();
-        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        let error = build(&request, &settings(), Network::Moebius, "n", &host()).unwrap_err();
         assert!(matches!(error, ContainerError::SystemInstall(_)), "{error}");
     }
 
@@ -1023,7 +1316,7 @@ mod tests {
         std::fs::write(world.root.join("pi-bolt"), "").unwrap();
         let mut request = request(&world);
         request.program = world.root.join("pi-bolt").to_string_lossy().into();
-        let error = build(&request, &settings(), Network::Moebius, "n").unwrap_err();
+        let error = build(&request, &settings(), Network::Moebius, "n", &host()).unwrap_err();
         assert!(matches!(error, ContainerError::Exposes { .. }), "{error}");
     }
 
@@ -1033,12 +1326,12 @@ mod tests {
         let mut request = request(&world);
         request.read_only.push("/data/a:b".into());
         assert_eq!(
-            build(&request, &settings(), Network::Moebius, "n"),
+            build(&request, &settings(), Network::Moebius, "n", &host()),
             Err(ContainerError::Unmountable("/data/a:b".into()))
         );
         request.read_only = vec!["relative".into()];
         assert_eq!(
-            build(&request, &settings(), Network::Moebius, "n"),
+            build(&request, &settings(), Network::Moebius, "n", &host()),
             Err(ContainerError::Relative("relative".into()))
         );
     }
@@ -1056,7 +1349,14 @@ mod tests {
     #[test]
     fn the_run_token_is_never_an_argument() {
         let world = world();
-        let (args, _) = build(&request(&world), &settings(), Network::Moebius, "n").unwrap();
+        let Container { args, .. } = build(
+            &request(&world),
+            &settings(),
+            Network::Moebius,
+            "n",
+            &host(),
+        )
+        .unwrap();
         let all = args.join(" ");
         assert!(
             !all.contains("moebius-run-secret") && !all.contains("sk-provider"),

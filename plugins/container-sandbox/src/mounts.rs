@@ -1,10 +1,10 @@
 //! The mounts a person gives a repository's runs on its page in Moebius (the project setting [`MOUNTS`]), checked and
-//! turned into `podman run --volume` values by [`volumes`] when a run is launched (see [`crate::container`]).
+//! turned into the `--volume` values of the engine's `run` by [`volumes`] when a run is launched (see [`crate::container`]).
 //!
 //! The setting holds one mount per line; an empty line and a line starting with `#` are skipped:
 //!
 //! - `<host path>:<container path>[:ro|:rw]`, a folder of the host, read only unless `rw`;
-//! - `volume:<name>:<container path>[:ro|:rw]`, a named Podman volume kept between runs, read and write unless `ro`.
+//! - `volume:<name>:<container path>[:ro|:rw]`, a named volume of the engine, kept between runs, read and write unless `ro`.
 //!
 //! A mount that would give a run more than the folder it names fails the launch, never the mount alone: a host path
 //! that is `/`, the home directory, inside a hidden directory of the home (`.ssh`, `.config`, …), Moebius's data
@@ -15,8 +15,8 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-use crate::container::HOME;
-use crate::settings::Cache;
+use crate::container::{HOME, volume_options};
+use crate::settings::{Cache, Engine};
 
 /// The key of the project setting that holds a repository's mounts.
 pub const MOUNTS: &str = "mounts";
@@ -56,8 +56,8 @@ pub struct Granted<'a> {
     pub home: Option<&'a Path>,
 }
 
-/// The `--volume` values of the mounts in `text`, in the order written.
-pub fn volumes(text: &str, granted: &Granted) -> Result<Vec<String>, MountError> {
+/// The `--volume` values of the mounts in `text` for `engine`, in the order written.
+pub fn volumes(text: &str, granted: &Granted, engine: Engine) -> Result<Vec<String>, MountError> {
     let mounts = parse(text)?;
     let mut targets: BTreeSet<PathBuf> = BTreeSet::new();
     let mut values = Vec::new();
@@ -82,8 +82,7 @@ pub fn volumes(text: &str, granted: &Granted) -> Result<Vec<String>, MountError>
                 format!("{}:{target}:{options}", real.to_string_lossy())
             }
             Source::Volume(name) => {
-                let options = if mount.writable { "U,z" } else { "ro,U,z" };
-                format!("{name}:{target}:{options}")
+                format!("{name}:{target}:{}", volume_options(engine, mount.writable))
             }
         });
     }
@@ -103,7 +102,7 @@ fn parse(text: &str) -> Result<Vec<Mount>, MountError> {
             why: why.to_string(),
         };
         if line.contains(',') {
-            return Err(bad("holds a comma, which a Podman mount cannot name"));
+            return Err(bad("holds a comma, which a container's mount cannot name"));
         }
         let mut parts: Vec<&str> = line.split(':').collect();
         let volume = parts.first() == Some(&"volume");
@@ -289,6 +288,7 @@ mod tests {
                     caches: &self.caches,
                     home: Some(&home),
                 },
+                Engine::Podman,
             )
         }
 

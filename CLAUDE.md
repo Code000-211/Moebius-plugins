@@ -37,9 +37,10 @@ cargo test --workspace
 ```
 
 The end-to-end tests of `nono-sandbox` run only when `MOEBIUS_E2E_NONO` is set (`1` for the `nono` on `PATH`, or the
-path of the program), on Linux. CI installs the pinned nono and sets it. Those of `container-sandbox` run only when
-`MOEBIUS_E2E_PODMAN` is set the same way, with a rootless Podman and pasta, and the image `MOEBIUS_E2E_PODMAN_IMAGE`
-(default `docker.io/library/debian:stable-slim`) pulled beforehand.
+path of the program), on Linux. CI installs the pinned nono and sets it. Those of `container-sandbox` run once for each
+engine named: `MOEBIUS_E2E_PODMAN` set the same way, with a rootless Podman and pasta, and `MOEBIUS_E2E_DOCKER`, with a
+Docker whose daemon runs as root; the image `MOEBIUS_E2E_IMAGE` (default `docker.io/library/debian:stable-slim`) is
+pulled beforehand into each.
 
 ## Commits
 

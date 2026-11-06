@@ -3,7 +3,8 @@
 //!
 //! | Flag | Setting | Default |
 //! |---|---|---|
-//! | `--podman <program>` | `podman` | `podman` |
+//! | `--engine podman\|docker` | `engine` | `podman` |
+//! | `--engine-program <program>` | `engine_program` | the engine's name |
 //! | `--image <image>` | `image` | none |
 //! | `--repo-image <repository>=<image>` (repeatable) | `repositories.<name>.image` | none |
 //! | `--network moebius\|internet` | `network` | `internet` |
@@ -12,6 +13,42 @@
 //! | `--exclude-agent <name>` (repeatable) | `exclude_agents` | none |
 
 use std::collections::{BTreeMap, BTreeSet};
+
+/// The program that builds the images and runs the containers. Both read the same Dockerfiles and take nearly the same
+/// arguments; where they differ is said where the arguments are made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// Rootless Podman, whose network is pasta.
+    Podman,
+    /// Docker Engine, as the user of the server through a daemon that runs as root.
+    Docker,
+}
+
+impl Engine {
+    fn parse(text: &str) -> Result<Self, SettingsError> {
+        match text {
+            "podman" => Ok(Self::Podman),
+            "docker" => Ok(Self::Docker),
+            other => Err(SettingsError::BadEngine(other.to_string())),
+        }
+    }
+
+    /// Its name, which is also its program's when `--engine-program` is not set.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Podman => "podman",
+            Self::Docker => "docker",
+        }
+    }
+
+    /// Its name as a sentence writes it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Podman => "Podman",
+            Self::Docker => "Docker",
+        }
+    }
+}
 
 /// How far the network reaches from inside the container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +69,7 @@ impl Network {
     }
 }
 
-/// A named Podman volume mounted at a path of the container, kept between runs: a package manager's cache.
+/// A named volume mounted at a path of the container, kept between runs: a package manager's cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
     pub volume: String,
@@ -46,6 +83,8 @@ pub enum SettingsError {
     MissingValue(String),
     #[error("unknown setting {0}")]
     UnknownFlag(String),
+    #[error("the engine must be \"podman\" or \"docker\", not {0:?}")]
+    BadEngine(String),
     #[error("the network mode must be \"moebius\" or \"internet\", not {0:?}")]
     BadNetwork(String),
     #[error("--agent-network takes <agent>=<mode>, not {0:?}")]
@@ -64,7 +103,9 @@ pub enum SettingsError {
 /// What the plugin was started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    pub podman: String,
+    pub engine: Engine,
+    /// The engine's program: `--engine-program`, else the engine's name.
+    pub program: String,
     pub image: Option<String>,
     pub repo_images: BTreeMap<String, String>,
     pub network: Network,
@@ -76,7 +117,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            podman: "podman".into(),
+            engine: Engine::Podman,
+            program: Engine::Podman.name().into(),
             image: None,
             repo_images: BTreeMap::new(),
             network: Network::Internet,
@@ -87,7 +129,7 @@ impl Default for Settings {
     }
 }
 
-/// An image comes before the container's command in `podman run`, so a value that starts with `-` would be a flag.
+/// An image comes before the container's command in the engine's `run`, so a value that starts with `-` would be a flag.
 fn image(text: String) -> Result<String, SettingsError> {
     if text.is_empty() || text.starts_with('-') || text.contains(char::is_whitespace) {
         return Err(SettingsError::BadImage(text));
@@ -115,6 +157,7 @@ impl Settings {
     /// Reads the settings from the plugin's arguments (without the program's name).
     pub fn from_args<I: IntoIterator<Item = String>>(args: I) -> Result<Self, SettingsError> {
         let mut settings = Self::default();
+        let mut program = None;
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
             let mut value = || {
@@ -122,7 +165,8 @@ impl Settings {
                     .ok_or_else(|| SettingsError::MissingValue(flag.clone()))
             };
             match flag.as_str() {
-                "--podman" => settings.podman = value()?,
+                "--engine" => settings.engine = Engine::parse(&value()?)?,
+                "--engine-program" => program = Some(value()?),
                 "--image" => settings.image = Some(image(value()?)?),
                 "--repo-image" => {
                     let pair = value()?;
@@ -152,6 +196,7 @@ impl Settings {
                 _ => return Err(SettingsError::UnknownFlag(flag)),
             }
         }
+        settings.program = program.unwrap_or_else(|| settings.engine.name().into());
         Ok(settings)
     }
 
@@ -193,7 +238,8 @@ mod tests {
     #[test]
     fn defaults_are_the_documented_ones() {
         let settings = parse(&[]).unwrap();
-        assert_eq!(settings.podman, "podman");
+        assert_eq!(settings.engine, Engine::Podman);
+        assert_eq!(settings.program, "podman");
         assert_eq!(settings.image, None);
         assert_eq!(settings.network, Network::Internet);
         assert!(settings.repo_images.is_empty() && settings.caches.is_empty());
@@ -203,8 +249,10 @@ mod tests {
     #[test]
     fn every_flag_is_read() {
         let settings = parse(&[
-            "--podman",
-            "/usr/bin/podman",
+            "--engine",
+            "docker",
+            "--engine-program",
+            "/usr/bin/docker",
             "--image",
             "localhost/moebius-base:1",
             "--repo-image",
@@ -219,7 +267,8 @@ mod tests {
             "Moebius",
         ])
         .unwrap();
-        assert_eq!(settings.podman, "/usr/bin/podman");
+        assert_eq!(settings.engine, Engine::Docker);
+        assert_eq!(settings.program, "/usr/bin/docker");
         assert_eq!(settings.image_for(None), Some("localhost/moebius-base:1"));
         assert_eq!(
             settings.image_for(Some("shop")),
@@ -246,6 +295,13 @@ mod tests {
     }
 
     #[test]
+    fn the_program_is_the_engines_name_unless_it_is_set() {
+        assert_eq!(parse(&["--engine", "docker"]).unwrap().program, "docker");
+        let settings = parse(&["--engine-program", "/opt/podman", "--engine", "podman"]).unwrap();
+        assert_eq!(settings.program, "/opt/podman");
+    }
+
+    #[test]
     fn without_a_default_image_only_the_named_repositories_have_one() {
         let settings = parse(&["--repo-image", "shop=shop"]).unwrap();
         assert_eq!(settings.image_for(Some("shop")), Some("shop"));
@@ -260,8 +316,12 @@ mod tests {
             Err(SettingsError::BadNetwork("open".into()))
         );
         assert_eq!(
-            parse(&["--podman"]),
-            Err(SettingsError::MissingValue("--podman".into()))
+            parse(&["--engine", "lxc"]),
+            Err(SettingsError::BadEngine("lxc".into()))
+        );
+        assert_eq!(
+            parse(&["--engine-program"]),
+            Err(SettingsError::MissingValue("--engine-program".into()))
         );
         assert_eq!(
             parse(&["--nope"]),

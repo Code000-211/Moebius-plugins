@@ -1,10 +1,12 @@
 # container-sandbox
 
 A [Moebius](https://github.com/Code000-211/moebius) launcher plugin. It starts every Pi-Bolt process (a card's run, a
-chat's Pi) in a rootless [Podman](https://podman.io) container of an image made for the project, from a Dockerfile you
-give the repository on its page in Moebius's web app or from an image you build yourself: the project's
-dependencies, toolchains and tools (a browser for Playwright, say) are in the image, and the run sees nothing of the host
-but its own paths. Without this plugin in `moebius.toml` nothing changes. The reasons for launchers are in
+chat's Pi) in a container of rootless [Podman](https://podman.io) or of [Docker](https://docs.docker.com/engine/), of an
+image made for the project, from a Dockerfile you give the repository on its page in Moebius's web app or from an image
+you build yourself: the project's dependencies, toolchains and tools (a browser for Playwright, say) are in the image,
+and the run sees nothing of the host but its own paths. Both engines build the same Dockerfiles and give a run the same
+view of the host; `--engine` picks one. Without this plugin in `moebius.toml` nothing changes. The reasons for
+launchers are in
 [ADR 0014](https://github.com/Code000-211/moebius/blob/main/docs/adr/0014-a-launcher-plugin-wraps-how-a-harness-starts.md)
 of Moebius; the launcher protocol is in its `docs/reference/plugin-api.md#launchers`.
 
@@ -14,25 +16,39 @@ plugin gives a run its own system: what it needs is installed in the image, not 
 ## What a run sees
 
 For every launch the plugin answers with itself, `container-sandbox run`, around
-`podman run --rm --interactive --init --pull never --log-driver none --userns keep-id --cap-drop ALL --security-opt no-new-privileges … <image> /bin/sh -c <script> moebius-env <pi-bolt> <args>`.
+`<engine> run --rm --interactive --init --pull never --log-driver none --cap-drop ALL --security-opt no-new-privileges … <image> … /bin/sh -c <script> moebius-env <pi-bolt> <args>`,
+where the run is the server's user: Podman's `--userns keep-id`, Docker's `--user <uid>:<gid>`.
 
 | | |
 |---|---|
-| Read and write | The run's worktree, its agent directory, its sessions directory and its temporary directory (the request's `read_write` and `dir`), at the same paths as on the host. The run is the server's user (`keep-id`), so what it writes is the user's. |
+| Read and write | The run's worktree, its agent directory, its sessions directory and its temporary directory (the request's `read_write` and `dir`), at the same paths as on the host. The run is the server's user, so what it writes is the user's. |
 | Read only | The lens and the bridge and the agent's own extensions and skills (the request's `read_only`), the clone whose git directory the worktree uses, and Pi-Bolt's installation, each at its host path. |
-| Its own | The image (its `PATH`, its toolchains, its certificates), its own `/tmp`, a fresh `HOME` at `/home/moebius` (a tmpfs of the run) and the `--cache` volumes. Everything the run changes outside the mounts goes with the container. |
+| Its own | The image (its `PATH`, its toolchains, its certificates), its own `/tmp`, a fresh `HOME` at `/home/moebius` (a tmpfs of the run, the user's) and the `--cache` volumes. Everything the run changes outside the mounts goes with the container. |
 | The repository's mounts | The folders and volumes a person gave the repository on its page ([Mounts](#mounts)). |
-| Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, not other worktrees, not the user's home, not the host's `/tmp` and no socket of the host. |
-| Network, mode `moebius` | pasta with `--splice-only`: the container has no interface but its loopback, on which the ports of the router, the gateway and the tool-call check are forwarded to the same ports of the host's loopback. Nothing else answers: no other port of the host, no other machine, no DNS. Unlike nono on Linux this holds by host, not by port. |
-| Network, mode `internet` (default) | The same forwarded ports, and general outbound access through pasta. The host's other loopback ports stay out of reach. |
+| Nothing else | Not Moebius's data directory, `secrets.toml`, the token file or `moebius.toml`, not other worktrees, not the user's home, not the host's `/tmp` and no socket of the host but the relay's (Docker). |
+| Network, mode `moebius` | Only the ports of the router, the gateway and the tool-call check, on the container's loopback, carried to the same ports of the host's loopback. Nothing else answers: no other port of the host, no other machine, no DNS. Unlike nono on Linux this holds by host, not by port. |
+| Network, mode `internet` (default) | The same ports, and general outbound access. The host's other loopback ports stay out of reach. |
 | Environment | `HOME` (`/home/moebius`), `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`, `TEMP`, `TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lower-case), `PI_CODING_AGENT_DIR`, `MOEBIUS` and `MOEBIUS_*`, and the image's own. No provider keys. |
 
-**The run token** reaches the container through its standard input, not through Podman. `container-sandbox run` starts
-Podman with its own environment minus the run's variables. It writes those variables to the container's standard input
-as `NAME=value` lines and an empty line, then relays Moebius's standard input. In the container, `/bin/sh` exports each
-line (`export "$line"`, which assigns and never evaluates) and becomes Pi-Bolt, which reads the rest. The token is
-therefore in none of Podman's arguments, its environment, its container configuration (`podman inspect`) or a log. A
-value with a line break cannot be passed this way, so it fails the launch with the variable's name.
+**The network** is made differently by each engine:
+
+- Podman's is pasta. Mode `moebius` is `--splice-only`: the container has no interface but its loopback, on which the
+  ports are forwarded to the host's loopback. Mode `internet` adds general outbound access through pasta.
+- Docker has no way to reach the host's loopback, so the plugin relays the ports itself. Its program, mounted read only
+  in the container, listens on each port of the container's loopback (`127.0.0.1`, and `::1` where the container has
+  it) and passes each connection to a Unix socket in a directory made for the run (mode `0700`, removed after it). On
+  the host, `container-sandbox run` passes what arrives there to the same port of the host's loopback. The
+  container's network is `none` in mode `moebius`, so the relayed ports are all there is, and Docker's `bridge` in
+  mode `internet`. This program then runs in the image too, so the image's glibc must be 2.34 or later (Debian 12,
+  Ubuntu 22.04, Fedora 35 and later, and every preset).
+
+**The run token** reaches the container through its standard input, not through the engine. `container-sandbox run`
+starts the engine with its own environment minus the run's variables. It writes those variables to the container's
+standard input as `NAME=value` lines and an empty line, then relays Moebius's standard input. In the container,
+`/bin/sh` exports each line (`export "$line"`, which assigns and never evaluates) and becomes Pi-Bolt, which reads the
+rest. The token is therefore in none of the engine's arguments, its environment, its container configuration
+(`podman inspect`, `docker inspect`) or a log. A value with a line break cannot be passed this way, so it fails the
+launch with the variable's name.
 
 **Pi-Bolt** is run from the host, by its real path, so its version stays that of the server:
 
@@ -47,22 +63,23 @@ The prebuilt Pi-Bolt is a glibc program, so the image must be glibc-based, not A
 
 Every host path is mounted with `z`, which labels it for containers where SELinux is on (Fedora) and does nothing
 elsewhere. The plugin answers `unchanged`, with a note, for a run on an SSH runner and for an excluded agent. Every
-wrapped launch has a note naming its container, its image and what its network reaches; Moebius records it as the
-run's `launcher_note` event.
+wrapped launch has a note naming its engine, its container, its image and what its network reaches; Moebius records it
+as the run's `launcher_note` event.
 
 Stop and cleanup:
 
-- The stop command (`container-sandbox stop <podman> <container>`) is `podman rm --force --time 0 --ignore`. It always
-  succeeds, and only for a container named like one of this plugin's.
+- The stop command (`container-sandbox stop <engine> <program> <container>`) is Podman's
+  `rm --force --time 0 --ignore` or Docker's `rm --force`. It always succeeds, and only for a container named like one
+  of this plugin's.
 - The container has `--rm`, so a container that ends on its own leaves nothing.
 - Containers are labelled `moebius.plugin=container-sandbox` and `moebius.run=<id>`. At the server's start, `leftovers`
   names the containers of runs that are not running, and the core removes them.
 
 ## The Dockerfiles
 
-The plugin asks for two Dockerfiles, both in the web app in a box named `container-sandbox`, and a person writes them there
-and saves them; the next run uses them. The box is the plugin's own page: above each Dockerfile, "Start from" offers
-presets that replace its text, to edit before saving.
+The plugin asks for two Dockerfiles, both in the web app in a box named `container-sandbox`, and a person writes them
+there and saves them; the next run uses them. The box is the plugin's own page: above each Dockerfile, "Start from"
+offers presets that replace its text, to edit before saving.
 
 | Preset | What it is | Offered for |
 |---|---|---|
@@ -95,21 +112,23 @@ itself, then `--image`. Left empty, the next one applies.
 - The image is named by the Dockerfile's hash, `localhost/moebius-container-sandbox:<first 32 hex digits of its SHA-256>`,
   so the same text is built once and a changed one is a new image. A repository's image built on a base is named by
   both, so a changed base builds every repository's image again at its next run.
-- Each is built by the wrapped launch, `container-sandbox run --build <image> <directory> [--base <image>]`, the base first,
-  before the container starts and only when Podman does not have it yet: the first run after a change waits for the build, and the build's output is in
-  the run's log. A build that fails fails the run, with a sentence saying so.
-- The build context is a directory that holds the Dockerfile alone (one for each, removed when the run ends), so `COPY` and `ADD` of
-  local files find nothing; the worktree is mounted at run time, not baked in. `FROM` pulls its base image as Podman's
-  `build` does (`--pull missing`), with the network of the server's user.
-- Built images are labelled `moebius.plugin=container-sandbox`; the plugin does not remove the ones a changed Dockerfile left
-  behind (`podman image prune --all --filter label=moebius.plugin=container-sandbox` does).
+- Each is built by the wrapped launch, `container-sandbox run --build <image> <directory> [--base <image>]`, the base
+  first, before the container starts and only when the engine does not have it yet: the first run after a change waits
+  for the build, and the build's output is in the run's log. A build that fails fails the run, with a sentence saying
+  so.
+- The build context is a directory that holds the Dockerfile alone (one for each, removed when the run ends), so `COPY`
+  and `ADD` of local files find nothing; the worktree is mounted at run time, not baked in. `FROM` pulls its base image
+  as the engine's `build` does, with the network of the server's user (or of Docker's daemon).
+- Built images are labelled `moebius.plugin=container-sandbox`; the plugin does not remove the ones a changed
+  Dockerfile left behind (`podman image prune --all --filter label=moebius.plugin=container-sandbox`, or the same with
+  `docker`, does).
 - Only a person can change them, never an agent: Moebius refuses the Moebius agent's change of a project or app setting.
 
 ## Mounts
 
 A repository's runs can see more than their worktree: folders of the host, such as fixtures or a sibling project the
-build reads, and named Podman volumes kept between runs, such as that repository's own package cache. A person gives
-them on the repository's page, under **Mounts**, as a table; the setting `mounts` behind it holds one per line:
+build reads, and named volumes kept between runs, such as that repository's own package cache. A person gives them on
+the repository's page, under **Mounts**, as a table; the setting `mounts` behind it holds one per line:
 
 ```text
 /srv/fixtures/shop:/fixtures
@@ -119,8 +138,14 @@ volume:shop-cargo:/home/moebius/.cargo
 
 - `<host path>:<container path>[:ro|:rw]` is a folder of the host, read only unless `rw`, mounted with its links
   resolved. What a run writes there, the next runs see.
-- `volume:<name>:<container path>[:ro|:rw]` is a named volume, read and write unless `ro`, owned by the run's user.
+- `volume:<name>:<container path>[:ro|:rw]` is a named volume of the engine, read and write unless `ro`, owned by the
+  run's user.
 - An empty line and a line starting with `#` are skipped.
+
+A named volume is the run's user's: Podman makes it so as it mounts it (`U`). Docker cannot, so before each Docker run
+that mounts volumes (these and the `--cache` ones) the plugin starts one short container of the run's image that can do
+nothing but change owners (root with only the capability `CHOWN`, no network, nothing mounted but the volumes) and runs
+`chown <uid>:<gid>` on each volume's top directory. A volume that cannot be given to the user fails the run.
 
 A mount that would give a run more than the folder it names fails the run, with a sentence naming its line: a host
 path that does not exist, is `/`, the home directory or a directory around it, inside a hidden directory of the home
@@ -140,12 +165,13 @@ The core's `[[plugins]]` entry has no table of settings, so they are the entry's
 
 | Argument | Setting | Default | What it is |
 |---|---|---|---|
-| `--podman <program>` | `podman` | `podman` | The Podman program. |
+| `--engine podman\|docker` | `engine` | `podman` | The engine that builds the images and runs the containers. |
+| `--engine-program <program>` | `engine_program` | the engine's name | The engine's program. |
 | `--image <image>` | `image` | none | The image of a run whose repository has none of its own, and of a chat without a repository. |
 | `--repo-image <repository>=<image>` | `repositories.<name>.image` | none | The image of one repository's runs, by its name in Moebius, when it has no Dockerfile of its own; repeat for more. |
 | `--network moebius\|internet` | `network` | `internet` | The network mode. With `moebius` a run reaches only the ports of the router, the gateway and the check; with `internet` it also reaches the internet, so it can send out whatever it can read. |
 | `--agent-network <name>=<mode>` | `agents.<name>.network` | none | The network mode for one agent; repeat for more. |
-| `--cache <volume>:<path>` | `caches` | none | A named Podman volume mounted at an absolute path of the container and kept between runs, such as a package manager's cache; repeat for more. Every run of every agent shares it, so one run can leave something in it that the next one uses. Prefer caches that check what they hold (npm, cargo and pip check checksums). |
+| `--cache <volume>:<path>` | `caches` | none | A named volume mounted at an absolute path of the container and kept between runs, such as a package manager's cache; repeat for more. Every run of every agent shares it, so one run can leave something in it that the next one uses. Prefer caches that check what they hold (npm, cargo and pip check checksums). |
 | `--exclude-agent <name>` | `exclude_agents` | none | An agent that runs without the sandbox, such as the Moebius agent, which operates the server with `"$MOEBIUS"`; repeat for more. |
 
 A run whose repository has no Dockerfile and no `--repo-image`, while there is no base Dockerfile and no `--image`, fails
@@ -156,6 +182,7 @@ with a sentence saying which.
 name = "container-sandbox"
 path = "/opt/moebius/plugins/container-sandbox"
 args = [
+  "--engine", "docker",
   "--image", "localhost/moebius-base:latest",
   "--repo-image", "shop=localhost/shop:latest",
   "--agent-network", "Researcher=internet",
@@ -167,11 +194,12 @@ launches = true
 
 ## The image
 
-Whether it is built from the Dockerfiles or by you, it is any glibc-based image that has `/bin/sh`, with what the project's runs need: its language and package manager, its
-dependencies, the tools its tests use. Install tools outside `HOME`, since `/home/moebius` is empty at every run (for
-Playwright set `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` before `npx playwright install --with-deps`). The run's user is
-the server's uid, not the image's `USER`, so make what a run writes outside its mounts writable for it, or leave it to
-`/tmp`. For example:
+Whether it is built from the Dockerfiles or by you, it is any image based on glibc 2.34 or later that has `/bin/sh`,
+with what the project's runs need: its language and package manager, its dependencies, the tools its tests use.
+Install tools outside `HOME`, since `/home/moebius` is empty at every run (for Playwright set
+`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` before `npx playwright install --with-deps`). The run's user is the server's
+uid, not the image's `USER`, so make what a run writes outside its mounts writable for it, or leave it to `/tmp`. For
+example:
 
 ```dockerfile
 FROM docker.io/library/node:24-bookworm
@@ -180,10 +208,10 @@ RUN npx -y playwright install --with-deps chromium && chmod -R a+rX /ms-playwrig
 ```
 
 ```sh
-podman build -t localhost/shop:latest -f Containerfile .
+podman build -t localhost/shop:latest -f Containerfile .   # or docker build
 ```
 
-A run never pulls (`--pull never`): an image of `--image` or `--repo-image` is in Podman's storage before the server
+A run never pulls (`--pull never`): an image of `--image` or `--repo-image` is in the engine's storage before the server
 starts, or the plugin does not start. Building a new image under the same name takes effect at the next run. The same
 Dockerfile written on the repository's page or the Settings page needs none of this: the plugin builds it.
 
@@ -192,16 +220,22 @@ Dockerfile written on the repository's page or the Settings page needs none of t
 The plugin checks once, when it starts, and exits with a sentence (in `<data_dir>/plugins/<name>.log`) when it cannot
 sandbox: a launcher that is not running fails every run, so a run never starts outside a container.
 
-- Linux only, where rootless Podman needs no virtual machine. Other platforms are refused.
-- `podman info` must answer, and say that Podman is rootless (a container of root's Podman would not be the user's).
-- Podman 4.4 or later, the first that passes pasta's options through, and pasta (the package `passt`), which Podman 5
-  names in `podman info` and Podman 4 finds on the `PATH`.
-- Every image of `--image` and `--repo-image` exists (`podman image exists`). Neither is required, since each repository
-  may bring a Dockerfile.
+- Linux only, where the engines need no virtual machine. Other platforms are refused.
+- `<engine> info` must answer.
+- Podman must be rootless (a container of root's Podman would not be the user's), 4.4 or later, the first that passes
+  pasta's options through, and have pasta (the package `passt`), which Podman 5 names in `podman info` and Podman 4
+  finds on the `PATH`.
+- Docker must be 20.10 or later, the first whose `run` takes `--pull never`; its daemon must be neither rootless nor
+  remapping user namespaces (`userns-remap`), since either would make `--user <uid>:<gid>` another uid on the host and
+  what a run writes not the user's; and it must not be Docker Desktop, whose containers run in a virtual machine that
+  does not share the host's paths and sockets.
+- Every image of `--image` and `--repo-image` exists (`podman image exists`, `docker image inspect`). Neither is
+  required, since each repository may bring a Dockerfile.
 
-The wrapped Podman, the stop command and `leftovers` get the plugin's own `PATH`, `HOME`, `XDG_RUNTIME_DIR`,
-`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `CONTAINERS_CONF`, `CONTAINERS_STORAGE_CONF` and
-`CONTAINER_HOST`, so that they find the storage the checks saw.
+The wrapped engine, the stop command and `leftovers` get the plugin's own `PATH`, `HOME`, `XDG_RUNTIME_DIR`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `CONTAINERS_CONF`, `CONTAINERS_STORAGE_CONF`,
+`CONTAINER_HOST`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH` and `DOCKER_TLS_VERIFY`, so that
+they find the storage or the daemon the checks saw.
 
 ## Known limits
 
@@ -211,24 +245,31 @@ The wrapped Podman, the stop command and `leftovers` get the plugin's own `PATH`
   name, and there are no Dockerfiles.
 - Every container shares the host's kernel. A stronger boundary is a runtime with its own kernel (gVisor's `runsc`, or
   `krun` for a micro-VM per run), which this plugin does not set yet.
+- Using Docker at all takes being able to run its daemon's containers, which is root on the host; the sandbox limits
+  the run, not the server's user.
+- Docker's daemon must be on this machine: one reached through `DOCKER_HOST` on another machine would mount that
+  machine's paths.
 - Only Pi-Bolt is launched through a launcher today.
 
 ## Installing
 
-See the [README of this repository](../../README.md#installing-a-plugin-by-hand). Podman and pasta are installed
-separately (`dnf install podman passt`, `apt install podman passt`).
+See the [README of this repository](../../README.md#installing-a-plugin-by-hand). The engine is installed separately:
+Podman and pasta (`dnf install podman passt`, `apt install podman passt`), or Docker Engine
+([docs.docker.com/engine/install](https://docs.docker.com/engine/install/)) with the server's user in the group
+`docker`.
 
 ## Tests
 
 `cargo test -p moebius-plugin-container-sandbox` runs the unit tests and `tests/protocol.rs`. The unit tests cover the
-container's arguments, the settings, the image chosen from the Dockerfiles, the checks against a fake Podman, the builds
-of missing images (the base first), the launch and the leftovers. The protocol test
-starts the built program and speaks JSON Lines to it, then runs the wrapped launch against a fake Podman and checks that
-the token reaches the harness but not Podman.
+container's arguments for each engine, the settings, the image chosen from the Dockerfiles, the checks against a fake
+Podman and a fake Docker, the builds of missing images (the base first), giving Docker's volumes to the user, the
+relay, the launch and the leftovers. The protocol test starts the built program and speaks JSON Lines to it, then runs
+the wrapped launch against a fake Podman and checks that the token reaches the harness but not Podman.
 
-The end-to-end tests in `tests/e2e.rs` run with a real rootless Podman when `MOEBIUS_E2E_PODMAN` is set (`1`, or the path
-of Podman), on Linux. They use the image `MOEBIUS_E2E_PODMAN_IMAGE` (default `docker.io/library/debian:stable-slim`,
-pulled beforehand), in a directory under `target/`. They check that:
+The end-to-end tests in `tests/e2e.rs` run with a real engine: a rootless Podman when `MOEBIUS_E2E_PODMAN` is set, a
+Docker when `MOEBIUS_E2E_DOCKER` is (`1`, or the path of the program), each test once for each, on Linux. They use the
+image `MOEBIUS_E2E_IMAGE` (default `docker.io/library/debian:stable-slim`, pulled beforehand into each engine), in a
+directory under `target/`. They check that:
 
 - a run reads and writes its worktree and temporary directory as the user, and reads its read-only paths without writing
   them;

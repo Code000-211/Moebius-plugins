@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MOEBIUS_E2E_PODMAN: "1"
-      MOEBIUS_E2E_PODMAN_IMAGE: docker.io/library/debian:stable-slim
+      MOEBIUS_E2E_IMAGE: docker.io/library/debian:stable-slim
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
@@ -84,5 +84,22 @@ jobs:
           sudo apt-get install -y passt
           podman --version
           podman info --format '{{.Host.Security.Rootless}}' | grep -qx true
-          podman pull "$MOEBIUS_E2E_PODMAN_IMAGE"
+          podman pull "$MOEBIUS_E2E_IMAGE"
+      - run: cargo test -p moebius-plugin-container-sandbox --test e2e -- --nocapture
+
+  e2e-docker:
+    name: end to end with Docker
+    runs-on: ubuntu-latest
+    env:
+      MOEBIUS_E2E_DOCKER: "1"
+      MOEBIUS_E2E_IMAGE: docker.io/library/debian:stable-slim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Pull the image
+        run: |
+          # The runner's Docker runs as root, and the runner's user is in the group docker.
+          docker version
+          docker pull "$MOEBIUS_E2E_IMAGE"
       - run: cargo test -p moebius-plugin-container-sandbox --test e2e -- --nocapture

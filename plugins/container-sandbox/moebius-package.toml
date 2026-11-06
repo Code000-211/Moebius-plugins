@@ -1,16 +1,16 @@
-# The package manifest of the Podman sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
+# The package manifest of the container sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
 
 name = "container-sandbox"
 version = "0.1.0"
 kind = "plugin"
-description = "Runs every Pi-Bolt process in a rootless Podman container of the project's image, built from a Dockerfile set on the repository's page, on a base Dockerfile set for the whole server, or named in its settings: its worktree, a few read-only paths and general outbound network access (the mode `moebius` limits it to the Moebius router)."
+description = "Runs every Pi-Bolt process in a container of rootless Podman or of Docker, of the project's image, built from a Dockerfile set on the repository's page, on a base Dockerfile set for the whole server, or named in its settings: its worktree, a few read-only paths and general outbound network access (the mode `moebius` limits it to the Moebius router)."
 license = "Apache-2.0"
 homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/container-sandbox"
 
 # The Moebius versions it works with: the ones whose plugin API has the project and app settings and the settings page.
 moebius = ">=0.8"
 
-# Rootless Podman runs containers without a virtual machine on Linux only.
+# Rootless Podman and Docker Engine run containers without a virtual machine on Linux only.
 targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
@@ -25,23 +25,32 @@ launches = true
 # The core's [[plugins]] entry has no table of settings, so the settings are the program's arguments.
 settings_as = "args"
 
-# The programs it needs besides Moebius: rootless Podman 4.4 or later, and pasta (the package passt).
+# The programs it needs besides Moebius: rootless Podman 4.4 or later and pasta (the package passt), or, with
+# `--engine docker`, Docker Engine 20.10 or later instead; there is no way to say "either" here, so the default is named.
 [plugin.requires]
 podman = ">=4.4"
 pasta = "*"
 
 [[plugin.settings]]
-name = "podman"
-flag = "--podman"
+name = "engine"
+flag = "--engine"
 type = "string"
+choices = ["podman", "docker"]
 default = "podman"
-description = "The Podman program."
+description = "The engine that builds the images and runs the containers: rootless Podman, or Docker Engine whose daemon runs as root (neither rootless nor remapping user namespaces). Both build the same Dockerfiles."
+
+[[plugin.settings]]
+name = "engine_program"
+flag = "--engine-program"
+type = "string"
+default = "the engine's name"
+description = "The engine's program."
 
 [[plugin.settings]]
 name = "image"
 flag = "--image"
 type = "string"
-description = "The image of a run whose repository has no Dockerfile, no image of its own and no base Dockerfile for the server, and of a chat without a repository. It must be in Podman's storage; the plugin never pulls it."
+description = "The image of a run whose repository has no Dockerfile, no image of its own and no base Dockerfile for the server, and of a chat without a repository. It must be in the engine's storage; the plugin never pulls it."
 
 [[plugin.settings]]
 name = "repositories.<name>.image"
@@ -73,7 +82,7 @@ flag = "--cache"
 type = "list of <volume>:<path>"
 repeatable = true
 default = []
-description = "A named Podman volume mounted at a path of the container and kept between runs, such as moebius-npm:/home/moebius/.npm. Every run of every agent shares it."
+description = "A named volume of the engine mounted at a path of the container and kept between runs, such as moebius-npm:/home/moebius/.npm. Every run of every agent shares it."
 
 [[plugin.settings]]
 name = "exclude_agents"

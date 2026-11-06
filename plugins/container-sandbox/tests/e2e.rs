@@ -1,7 +1,8 @@
-//! Runs small scripts through a real rootless Podman, in the container the plugin describes. It runs only when
-//! `MOEBIUS_E2E_PODMAN` is set, on Linux: `1` uses the `podman` on `PATH`, any other value is the path of the
-//! program. The image is `MOEBIUS_E2E_PODMAN_IMAGE`, `docker.io/library/debian:stable-slim` when it is not set; it
-//! must be pulled already (the plugin never pulls), and needs `bash` and `timeout`. The tests check what the sandbox
+//! Runs small scripts through a real engine, in the container the plugin describes: a rootless Podman when
+//! `MOEBIUS_E2E_PODMAN` is set, a Docker when `MOEBIUS_E2E_DOCKER` is, each test once for each, on Linux. `1` uses the
+//! program of that name on `PATH`, any other value is the path of the program. The image is `MOEBIUS_E2E_IMAGE`,
+//! `docker.io/library/debian:stable-slim` when it is not set; it must be pulled already into each engine (the plugin
+//! never pulls), and needs `bash` and `timeout`. The tests check what the sandbox
 //! is for: a run reads and writes its worktree and temporary directory as the user, reads its read-only paths without
 //! writing them, sees nothing else of the host (not the data directory, its secrets, another worktree or this
 //! repository), has its token and no provider key, reaches the router's port but no other port of the host or of
@@ -18,29 +19,44 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use container_sandbox::container::User;
 use container_sandbox::launch::ContainerSandbox;
-use container_sandbox::settings::{Network, Settings};
+use container_sandbox::settings::{Engine, Network, Settings};
 use moebius_plugin_api::{
     LaunchAnswer, LaunchRequest, LaunchRun, LeftoversRequest, Plugin, Urls, Wrapped,
 };
 
 mod common;
 
-/// The Podman to test, or `None` when the test is not asked for.
-fn podman() -> Option<String> {
-    let value = std::env::var("MOEBIUS_E2E_PODMAN")
-        .ok()
-        .filter(|v| !v.is_empty())?;
-    let program = if value == "1" || value == "true" {
-        "podman".into()
-    } else {
-        value
-    };
-    Some(container_sandbox::check::resolve(&program).unwrap_or(program))
+/// An engine to test and its program.
+#[derive(Clone)]
+struct Tested {
+    engine: Engine,
+    program: String,
+}
+
+/// The engines the tests are asked to run with; none when they are not asked for.
+fn engines() -> Vec<Tested> {
+    [
+        (Engine::Podman, "MOEBIUS_E2E_PODMAN"),
+        (Engine::Docker, "MOEBIUS_E2E_DOCKER"),
+    ]
+    .into_iter()
+    .filter_map(|(engine, variable)| {
+        let value = std::env::var(variable).ok().filter(|v| !v.is_empty())?;
+        let program = if value == "1" || value == "true" {
+            engine.name().into()
+        } else {
+            value
+        };
+        let program = container_sandbox::check::resolve(&program).unwrap_or(program);
+        Some(Tested { engine, program })
+    })
+    .collect()
 }
 
 fn image() -> String {
-    std::env::var("MOEBIUS_E2E_PODMAN_IMAGE")
+    std::env::var("MOEBIUS_E2E_IMAGE")
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "docker.io/library/debian:stable-slim".into())
@@ -66,7 +82,7 @@ struct World {
 }
 
 /// A data directory with a run's worktree and another's, a secret, a clone, a read-only file and the harness's
-/// installation. Under the target directory, whose path is the same for the host's Podman as for this test.
+/// installation. Under the target directory, whose path is the same for the host's engine as for this test.
 fn world() -> World {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -164,9 +180,10 @@ impl World {
     }
 }
 
-fn plugin(podman: &str, network: Network) -> ContainerSandbox {
+fn plugin(tested: &Tested, network: Network) -> ContainerSandbox {
     let settings = Settings {
-        podman: podman.into(),
+        engine: tested.engine,
+        program: tested.program.clone(),
         image: Some(image()),
         network,
         ..Settings::default()
@@ -174,7 +191,8 @@ fn plugin(podman: &str, network: Network) -> ContainerSandbox {
     ContainerSandbox::new(
         settings,
         PathBuf::from(env!("CARGO_BIN_EXE_container-sandbox")),
-        ContainerSandbox::podman_env_of(std::env::vars()),
+        ContainerSandbox::engine_env_of(std::env::vars()),
+        User::current().unwrap(),
     )
 }
 
@@ -245,10 +263,7 @@ fn can(name: &str, command: &str) -> String {
     format!("if {command} 2>/dev/null; then echo {name}=yes; else echo {name}=no; fi\n")
 }
 
-fn probe(world: &World, network: Network) -> BTreeMap<String, String> {
-    let Some(podman) = podman() else {
-        return BTreeMap::new();
-    };
+fn probe(tested: &Tested, world: &World, network: Network) -> BTreeMap<String, String> {
     let data = world.at("data");
     let mut body = String::new();
     body.push_str("echo uid=$(id -u)\necho home=$HOME\necho args=\"$*\"\n");
@@ -290,15 +305,21 @@ fn probe(world: &World, network: Network) -> BTreeMap<String, String> {
         body.push_str(&connect("external", &ip.to_string(), port));
     }
     let program = world.harness(&body);
-    let wrapped = wrapped(&plugin(&podman, network), world.request(program));
+    let wrapped = wrapped(&plugin(tested, network), world.request(program));
     run(&wrapped, world)
 }
 
 #[test]
 fn a_run_sees_its_paths_and_the_router_and_nothing_else() {
-    let Some(_) = podman() else { return };
+    for tested in engines() {
+        sees_its_paths_and_the_router_and_nothing_else(&tested);
+    }
+}
+
+fn sees_its_paths_and_the_router_and_nothing_else(tested: &Tested) {
     let world = world();
-    let seen = probe(&world, Network::Moebius);
+    let seen = probe(tested, &world, Network::Moebius);
+    let engine = tested.engine.name();
     let expected = [
         ("home", "/home/moebius"),
         ("args", "--mode rpc"),
@@ -321,12 +342,12 @@ fn a_run_sees_its_paths_and_the_router_and_nothing_else() {
         assert_eq!(
             seen.get(name).map(String::as_str),
             Some(value),
-            "{name} in {seen:?}"
+            "{engine}: {name} in {seen:?}"
         );
     }
     assert_eq!(seen.get("tmpdir"), Some(&world.at("data/runs/7/tmp")));
     if world.external.is_some() {
-        assert_eq!(seen["external"], "closed", "{seen:?}");
+        assert_eq!(seen["external"], "closed", "{engine}: {seen:?}");
     }
     // The run is the user: what it wrote in the worktree is the user's.
     let worktree = Path::new(&world.root).join("data/worktrees/run-7");
@@ -337,20 +358,27 @@ fn a_run_sees_its_paths_and_the_router_and_nothing_else() {
 
 #[test]
 fn mode_internet_still_reaches_no_other_port_of_the_host() {
-    let Some(_) = podman() else { return };
-    let world = world();
-    let seen = probe(&world, Network::Internet);
-    assert_eq!(seen["router"], "open", "{seen:?}");
-    assert_eq!(seen["other"], "closed", "{seen:?}");
-    assert_eq!(seen["read_secrets"], "no", "{seen:?}");
+    for tested in engines() {
+        let world = world();
+        let seen = probe(&tested, &world, Network::Internet);
+        let engine = tested.engine.name();
+        assert_eq!(seen["router"], "open", "{engine}: {seen:?}");
+        assert_eq!(seen["other"], "closed", "{engine}: {seen:?}");
+        assert_eq!(seen["read_secrets"], "no", "{engine}: {seen:?}");
+    }
 }
 
 #[test]
 fn the_harness_keeps_its_standard_input_and_output() {
-    let Some(podman) = podman() else { return };
+    for tested in engines() {
+        keeps_its_standard_input_and_output(&tested);
+    }
+}
+
+fn keeps_its_standard_input_and_output(tested: &Tested) {
     let world = world();
     let program = world.harness("exec cat\n");
-    let wrapped = wrapped(&plugin(&podman, Network::Moebius), world.request(program));
+    let wrapped = wrapped(&plugin(tested, Network::Moebius), world.request(program));
     let mut child = spawn(&wrapped, &world);
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
@@ -365,9 +393,16 @@ fn the_harness_keeps_its_standard_input_and_output() {
     assert!(child.wait().unwrap().success());
 }
 
-fn exists(podman: &str, name: &str) -> bool {
-    Command::new(podman)
-        .args(["container", "exists", name])
+fn exists(tested: &Tested, name: &str) -> bool {
+    // Docker has no `container exists`.
+    let ask = match tested.engine {
+        Engine::Podman => "exists",
+        Engine::Docker => "inspect",
+    };
+    Command::new(&tested.program)
+        .args(["container", ask, name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .unwrap()
         .success()
@@ -382,9 +417,9 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 /// Starts a launch whose harness says `ready` and sleeps, and waits for the word.
-fn sleeping(podman: &str, world: &World) -> (Wrapped, Child) {
+fn sleeping(tested: &Tested, world: &World) -> (Wrapped, Child) {
     let program = world.harness("echo ready\nexec sleep 600\n");
-    let wrapped = wrapped(&plugin(podman, Network::Moebius), world.request(program));
+    let wrapped = wrapped(&plugin(tested, Network::Moebius), world.request(program));
     let mut child = spawn(&wrapped, world);
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let mut ready = String::new();
@@ -407,25 +442,36 @@ fn run_command(command: &moebius_plugin_api::CommandLine) {
 
 #[test]
 fn the_stop_command_removes_the_container_and_the_launch_ends() {
-    let Some(podman) = podman() else { return };
+    for tested in engines() {
+        stop_removes_the_container_and_the_launch_ends(&tested);
+    }
+}
+
+fn stop_removes_the_container_and_the_launch_ends(tested: &Tested) {
     let world = world();
-    let (wrapped, mut child) = sleeping(&podman, &world);
+    let (wrapped, mut child) = sleeping(tested, &world);
     let stop = wrapped.stop.clone().unwrap();
-    let name = stop.args[2].clone();
-    assert!(exists(&podman, &name));
+    let name = stop.args[3].clone();
+    assert!(exists(tested, &name));
     // The core runs the stop command more than once for one process.
     run_command(&stop);
     run_command(&stop);
     wait_until("the launch ends", || child.try_wait().unwrap().is_some());
-    assert!(!exists(&podman, &name));
+    // Docker's `rm --force` returns before the container is gone from its list.
+    wait_until("the container is gone", || !exists(tested, &name));
 }
 
 #[test]
 fn a_container_whose_launch_was_killed_is_a_leftover() {
-    let Some(podman) = podman() else { return };
+    for tested in engines() {
+        killed_launch_leaves_a_leftover(&tested);
+    }
+}
+
+fn killed_launch_leaves_a_leftover(tested: &Tested) {
     let world = world();
-    let (wrapped, mut child) = sleeping(&podman, &world);
-    let name = wrapped.stop.as_ref().unwrap().args[2].clone();
+    let (wrapped, mut child) = sleeping(tested, &world);
+    let name = wrapped.stop.as_ref().unwrap().args[3].clone();
     // The server died: its launch's process group is killed, and the container stays.
     let group = format!("-{}", child.id());
     assert!(
@@ -436,9 +482,9 @@ fn a_container_whose_launch_was_killed_is_a_leftover() {
             .success()
     );
     child.wait().unwrap();
-    assert!(exists(&podman, &name));
+    assert!(exists(tested, &name));
 
-    let plugin = plugin(&podman, Network::Moebius);
+    let plugin = plugin(tested, Network::Moebius);
     let still = plugin.call(moebius_plugin_api::Call::new(
         moebius_plugin_api::Kind::Launcher,
         "leftovers",
@@ -446,7 +492,7 @@ fn a_container_whose_launch_was_killed_is_a_leftover() {
     ));
     let still: moebius_plugin_api::Leftovers = serde_json::from_value(still.unwrap()).unwrap();
     assert!(
-        !still.cleanup.iter().any(|c| c.args[2] == name),
+        !still.cleanup.iter().any(|c| c.args[3] == name),
         "a running run's container is not a leftover"
     );
     let left = plugin.call(moebius_plugin_api::Call::new(
@@ -458,8 +504,8 @@ fn a_container_whose_launch_was_killed_is_a_leftover() {
     let cleanup = left
         .cleanup
         .iter()
-        .find(|c| c.args[2] == name)
+        .find(|c| c.args[3] == name)
         .unwrap_or_else(|| panic!("{name} is not among {left:?}"));
     run_command(cleanup);
-    assert!(!exists(&podman, &name));
+    wait_until("the container is gone", || !exists(tested, &name));
 }

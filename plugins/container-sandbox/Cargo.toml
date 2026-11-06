@@ -1,7 +1,7 @@
 [package]
 name = "moebius-plugin-container-sandbox"
 version = "0.1.0"
-description = "A Moebius launcher plugin that runs every Pi-Bolt process in a rootless Podman container."
+description = "A Moebius launcher plugin that runs every Pi-Bolt process in a container of rootless Podman or of Docker."
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
