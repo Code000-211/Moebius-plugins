@@ -20,8 +20,8 @@ use serde_json::Value;
 use crate::NAME;
 use crate::commands::{Build, Own, Relay, Wrap, is_container_name, stop_command};
 use crate::container::{
-    BASE_ARG, BASE_DOCKERFILE, Container, DOCKERFILE, Host, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL,
-    User, build, env_lines, passed_env,
+    BASE_DOCKERFILE, Container, DOCKERFILE, Host, NAME_PREFIX, PLUGIN_LABEL, RUN_LABEL, User,
+    build, env_lines, passed_env,
 };
 use crate::mounts::MOUNTS;
 use crate::settings::{Engine, Network, Settings};
@@ -354,37 +354,24 @@ impl Plugin for ContainerSandbox {
             project_settings: vec![PluginSetting {
                 key: DOCKERFILE.into(),
                 label: "Dockerfile".into(),
-                description: format!(
-                    "The image of this repository's runs: the plugin builds it with its engine (Podman or \
-                     Docker) before the first run that needs it, from an empty build context, and builds it again when it changes. When the \
-                     server has a base Dockerfile (on the Settings page), start from it with `ARG {BASE_ARG}` and \
-                     `FROM ${{{BASE_ARG}}}`. Left empty, the runs use --repo-image, else the base Dockerfile, \
-                     else --image."
-                ),
+                description: "The image of this repository's runs, built when first needed and again when it changes. \
+                     Left empty, the server's default image is used."
+                    .into(),
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
             }, PluginSetting {
                 key: MOUNTS.into(),
                 label: "Mounts".into(),
-                description: "Folders of the host and named volumes of the engine this repository's runs see, one per \
-                     line: <host path>:<container path>[:ro|:rw], read only unless rw, or \
-                     volume:<name>:<container path>[:ro|:rw], read and write unless ro and kept between runs. A \
-                     mount that would reach Moebius's data directory, a hidden directory of the home, or a path the \
-                     run already has fails the run."
-                    .into(),
+                description: "Host folders and engine volumes this repository's runs can see.".into(),
                 input: SettingInput::Code,
                 language: None,
             }],
             app_settings: vec![PluginSetting {
                 key: BASE_DOCKERFILE.into(),
                 label: "Base Dockerfile".into(),
-                description: format!(
-                    "The image every repository's Dockerfile starts from: what the harness needs in a container \
-                     (a glibc-based system with /bin/sh, node if the harness is a node package, git) and the \
-                     tools all projects share. Built like a repository's Dockerfile and again when it changes, \
-                     which builds the repositories' images again. A repository's Dockerfile begins with \
-                     `ARG {BASE_ARG}` and `FROM ${{{BASE_ARG}}}`; a repository without one runs on this image."
-                ),
+                description: "The image every repository's Dockerfile starts from: what the harness needs and the tools \
+                     all projects share. Changing it rebuilds every repository's image."
+                    .into(),
                 input: SettingInput::Code,
                 language: Some("dockerfile".into()),
             }],
