@@ -10,10 +10,11 @@
 //! - read and write: the request's `read_write` paths and the working directory (the worktree, the agent
 //!   directory, the sessions directory, the run's temporary directory), and the devices of [`DEVICES`];
 //! - read only: the request's `read_only` paths (the extensions), the clone whose git directory
-//!   the worktree uses, the directory of the harness's installation, the directories on the run's `PATH` that exist
+//!   the worktree uses, the program a run operates the server with (`MOEBIUS`), the directory of the harness's installation, the directories on the run's `PATH` that exist
 //!   (the toolchains), the rustup and cargo directories a toolchain on `PATH` needs, and the `read_only` setting;
 //! - the network: in mode `moebius` all outbound access is blocked except TCP to the ports of the request's router,
-//!   gateway and check addresses, which must be on the loopback; in mode `internet` outbound access is not
+//!   gateway and check addresses, and of the desktop API for a run that operates the server (`MOEBIUS_URL`), which must
+//!   be on the loopback; in mode `internet` outbound access is not
 //!   restricted. On Linux the ports are `connect_port` rules, which Landlock applies to every host (see
 //!   [`network_note`]); on macOS `open_port`, which Seatbelt limits to localhost;
 //! - Unix sockets: `linux.af_unix_mediation` is `pathname` and no socket is granted, so a run cannot connect to the
@@ -121,20 +122,38 @@ pub fn kept_env(env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
 pub fn loopback_ports(urls: &Urls) -> Result<Vec<u16>, ProfileError> {
     let mut ports = BTreeSet::new();
     for url in [&urls.router, &urls.gateway, &urls.check] {
-        let (host, port) = host_and_port(url)?;
-        let loopback = host == "localhost" || host == "::1" || host.starts_with("127.");
-        if !loopback {
-            return Err(ProfileError::NotLoopback(url.clone()));
-        }
-        if port < 1024 {
-            return Err(ProfileError::WellKnownPort {
-                url: url.clone(),
-                port,
-            });
-        }
-        ports.insert(port);
+        ports.insert(loopback_port(url)?);
     }
     Ok(ports.into_iter().collect())
+}
+
+/// The ports a run may connect to: those of [`loopback_ports`] and, for a run that operates the server with
+/// `"$MOEBIUS"` (the Moebius agent), the port of the desktop API that the request's `MOEBIUS_URL` names. The same
+/// rules hold for it: loopback, and 1024 or more.
+pub fn allowed_ports(request: &LaunchRequest) -> Result<Vec<u16>, ProfileError> {
+    let mut ports: BTreeSet<u16> = loopback_ports(&request.urls)?.into_iter().collect();
+    if let Some(url) = request.env.get(DESKTOP_API) {
+        ports.insert(loopback_port(url)?);
+    }
+    Ok(ports.into_iter().collect())
+}
+
+/// The variable that names the desktop API for the runs that operate the server.
+const DESKTOP_API: &str = "MOEBIUS_URL";
+
+fn loopback_port(url: &str) -> Result<u16, ProfileError> {
+    let (host, port) = host_and_port(url)?;
+    let loopback = host == "localhost" || host == "::1" || host.starts_with("127.");
+    if !loopback {
+        return Err(ProfileError::NotLoopback(url.to_string()));
+    }
+    if port < 1024 {
+        return Err(ProfileError::WellKnownPort {
+            url: url.to_string(),
+            port,
+        });
+    }
+    Ok(port)
 }
 
 fn host_and_port(url: &str) -> Result<(String, u16), ProfileError> {
@@ -341,6 +360,14 @@ pub fn build(
     // What the request names is the run's own. What the environment and the settings name is checked below.
     let mut readable: Vec<PathBuf> = request.read_only.iter().map(PathBuf::from).collect();
     readable.extend(request.clone.iter().map(PathBuf::from));
+    // The program a run operates the server with (`"$MOEBIUS"`), which is the one file it needs of the server.
+    readable.extend(
+        request
+            .env
+            .get("MOEBIUS")
+            .map(PathBuf::from)
+            .filter(|program| program.is_absolute() && program.is_file()),
+    );
     let path_var = request.env.get("PATH").map(String::as_str);
     // Relative and empty entries are left out: granting less is safe.
     let path_dirs: Vec<PathBuf> = path_var
@@ -429,7 +456,7 @@ pub fn build(
 
     let network = match mode {
         Network::Moebius => {
-            let ports = loopback_ports(&request.urls)?;
+            let ports = allowed_ports(request)?;
             if macos {
                 json!({"block": true, "open_port": ports})
             } else {
@@ -478,7 +505,7 @@ pub fn network_note(request: &LaunchRequest, mode: Network, os: &str) -> Option<
     if mode != Network::Moebius || os == "macos" {
         return None;
     }
-    let ports = loopback_ports(&request.urls).ok()?;
+    let ports = allowed_ports(request).ok()?;
     let ports: Vec<String> = ports.iter().map(u16::to_string).collect();
     Some(format!(
         "nono filters TCP by port on Linux, not by host: the run can connect to port {} of every host, not only of \
@@ -545,6 +572,9 @@ mod tests {
             },
             clone: Some("/data/repos/demo".into()),
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 
@@ -706,6 +736,38 @@ mod tests {
         assert!(matches!(
             build(&request, &Settings::default(), Network::Moebius, "linux"),
             Err(ProfileError::BadUrl(_))
+        ));
+    }
+
+    #[test]
+    fn a_run_that_operates_the_server_may_reach_the_desktop_api_and_read_its_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("moebius");
+        std::fs::write(&program, "").unwrap();
+        let mut request = request();
+        request
+            .env
+            .insert("MOEBIUS_URL".into(), "http://127.0.0.1:7171".into());
+        request
+            .env
+            .insert("MOEBIUS".into(), program.to_string_lossy().into_owned());
+        let profile = build(&request, &Settings::default(), Network::Moebius, "linux").unwrap();
+        assert_eq!(
+            profile["network"]["connect_port"],
+            json!([7171, 7172]),
+            "{profile}"
+        );
+        assert!(
+            strings(&profile, "filesystem", "read_file")
+                .contains(&program.to_string_lossy().into_owned())
+        );
+        // A desktop API that is not on the loopback is refused, as the router is.
+        request
+            .env
+            .insert("MOEBIUS_URL".into(), "http://10.0.0.5:7171".into());
+        assert!(matches!(
+            build(&request, &Settings::default(), Network::Moebius, "linux"),
+            Err(ProfileError::NotLoopback(_))
         ));
     }
 

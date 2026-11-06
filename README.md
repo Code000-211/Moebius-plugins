@@ -10,10 +10,11 @@ extends it lives here, and this repository is also meant to become the package i
 ```
 moebius-plugins/
 ├── plugins/
-│   └── nono-sandbox/        a launcher: every Pi-Bolt run in its own nono sandbox
-│       ├── moebius-package.toml
-│       ├── Cargo.toml
-│       └── src/, tests/
+│   ├── nono-sandbox/        a launcher: every Pi-Bolt run in its own nono sandbox
+│   │   ├── moebius-package.toml
+│   │   ├── Cargo.toml
+│   │   └── src/, tests/
+│   └── container-sandbox/   a launcher: every Pi-Bolt run in a Podman or Docker container of the project's image
 ├── workflows/<name>/        column-script packages (none yet)
 ├── rules/<name>/            rules packages (none yet)
 ├── skills/<name>/           skill packages (none yet)
@@ -34,6 +35,7 @@ defaults and the targets it is built for. The format is in `docs/reference/packa
 | Package | Kind | What it does |
 |---|---|---|
 | [`nono-sandbox`](plugins/nono-sandbox/README.md) | plugin, launcher | Starts every Pi-Bolt process in a [nono](https://github.com/nolabs-ai/nono) sandbox (Landlock on Linux, Seatbelt on macOS): the run sees its worktree and a few read-only paths, and by default reaches only Moebius's ports (on Linux nono filters by port, so those ports are open on every host; macOS is experimental). |
+| [`container-sandbox`](plugins/container-sandbox/README.md) | plugin, launcher | Starts every Pi-Bolt process in a container of rootless [Podman](https://podman.io) or of [Docker](https://docs.docker.com/engine/), of an image built for the project from the same Dockerfiles on either, with its dependencies and tools (Linux): the run sees its worktree and a few read-only paths, and by default reaches the internet too (the mode `moebius` limits it to Moebius's ports on the host's loopback). |
 
 ## The index
 
@@ -128,7 +130,7 @@ A plugin can also be built or downloaded and then named in `moebius.toml` withou
 ## Working on it
 
 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` must pass; CI runs
-the same on Linux and macOS, and an end-to-end job with a real nono. See [CLAUDE.md](CLAUDE.md).
+the same on Linux and macOS, and end-to-end jobs with a real nono, a real rootless Podman and a real Docker. See [CLAUDE.md](CLAUDE.md).
 
 ## License
 

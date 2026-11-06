@@ -187,6 +187,9 @@ impl Plugin for NonoSandbox {
             name: NAME.into(),
             version: env!("CARGO_PKG_VERSION").into(),
             kinds: vec![Kind::Launcher],
+            project_settings: Vec::new(),
+            app_settings: Vec::new(),
+            settings_ui: None,
         }
     }
 
@@ -212,6 +215,8 @@ impl Plugin for NonoSandbox {
 // The paths in these tests are Unix paths.
 #[cfg(all(test, unix))]
 mod tests {
+    use std::collections::BTreeMap;
+
     use moebius_plugin_api::{LaunchRun, Urls};
 
     use super::*;
@@ -252,6 +257,9 @@ mod tests {
             },
             clone: None,
             runner: None,
+            repository: None,
+            project_settings: BTreeMap::new(),
+            app_settings: BTreeMap::new(),
         }
     }
 

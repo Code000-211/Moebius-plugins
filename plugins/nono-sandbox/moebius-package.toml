@@ -1,14 +1,14 @@
 # The package manifest of the nono sandbox plugin, in the layout of the package manager's manifest (Moebius #172).
 
 name = "nono-sandbox"
-version = "0.2.0"
+version = "0.3.0"
 kind = "plugin"
 description = "Runs every Pi-Bolt process in its own nono sandbox: its worktree, a few read-only paths and, by default, only the Moebius router."
 license = "Apache-2.0"
 homepage = "https://github.com/Code000-211/moebius-plugins/tree/main/plugins/nono-sandbox"
 
-# The Moebius versions it works with: the ones that have the launcher kind.
-moebius = ">=0.2"
+# The Moebius versions it works with: the ones whose plugin API has the project and app settings and the settings page.
+moebius = ">=0.8"
 
 # nono supports Linux (Landlock, kernel 5.13 or later) and macOS (Seatbelt); on Windows only inside WSL2, where the
 # Linux build is used. macOS is experimental: its profile has not run on a Mac yet.

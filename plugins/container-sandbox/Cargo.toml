@@ -1,0 +1,28 @@
+[package]
+name = "moebius-plugin-container-sandbox"
+version = "0.1.0"
+description = "A Moebius launcher plugin that runs every Pi-Bolt process in a container of rootless Podman or of Docker."
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+name = "container_sandbox"
+
+[[bin]]
+name = "container-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+moebius-plugin-api = { git = "https://github.com/Code000-211/moebius", rev = "5dac1dd2c7e4cd5537a4cb3fef429310b1cbfffa" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
