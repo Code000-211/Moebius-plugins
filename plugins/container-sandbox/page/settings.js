@@ -7,7 +7,16 @@ export default function mount(element, host) {
   const values = { ...host.values };
   const takeDowns = [];
   const root = document.createElement("div");
-  root.style.cssText = "display:flex;flex-direction:column;gap:24px;min-width:0";
+  // The frame clips whatever is drawn outside the page, so the room is here, not outside: the focus ring of a field at
+  // the page's edge would be cut off otherwise.
+  root.style.cssText = "display:flex;flex-direction:column;gap:24px;min-width:0;padding:3px";
+  const style = document.createElement("style");
+  style.textContent =
+    ".plugin-code-editor:focus,input:focus,select:focus,button:focus-visible{" +
+    "outline:none;border-color:var(--accent,var(--text-secondary));" +
+    "box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,var(--text-secondary)) 45%,transparent)}" +
+    "input:focus,select:focus{box-shadow:0 0 0 2px var(--accent,var(--text-secondary))}";
+  root.append(style);
   for (const setting of host.settings) {
     root.append(
       setting.key === "mounts"
