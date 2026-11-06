@@ -541,6 +541,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn calls(log: &Path) -> Vec<String> {
         std::fs::read_to_string(log)
             .unwrap()

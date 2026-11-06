@@ -313,6 +313,7 @@ fn build_context(name: &str, dockerfile: &str) -> Result<PathBuf, PluginError> {
 /// Makes the directory of a Docker run's relay sockets, which only the server's user may enter: a socket in it is a
 /// way to the router.
 fn relay_dir(dir: &std::path::Path) -> Result<(), PluginError> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -682,11 +683,14 @@ mod tests {
         code: i32,
     ) -> ContainerSandbox {
         let program = dir.join(engine.name());
+        // The fake reads its answer with the shell's own `read`: a run's PATH may hold no `cat`.
+        std::fs::write(dir.join("ps.out"), format!("{listed}\n")).unwrap();
         crate::testing::script(
             &program,
             &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\ncat <<'EOF'\n{listed}\nEOF\necho 'said on stderr' >&2\nexit {code}\n",
-                dir.join("ps.args").display()
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nwhile IFS= read -r line; do printf '%s\\n' \"$line\"; done < {}\necho 'said on stderr' >&2\nexit {code}\n",
+                dir.join("ps.args").display(),
+                dir.join("ps.out").display()
             ),
         );
         plugin(|s| {
